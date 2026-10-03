@@ -809,11 +809,9 @@ def handle_message(event):
                 [
                     serial_text,
                     (
-                        f"✅ 已出庫｜"
-                        f"{result['product']['code']} × {quantity} "
-                        f"給：{customer}\n"
-                        f"（{result['order_no']}）\n"
-                        f"庫存剩餘：{result['remaining']} 張"
+                        f"✅ 已出庫\n"
+                        f"{result['product']['code']} × {quantity}  ➡️《{customer}》\n"
+                        f"（訂單編號{result['order_no']}）"
                     ),
                 ],
             )
