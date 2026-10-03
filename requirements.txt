@@ -3,3 +3,4 @@ gunicorn
 line-bot-sdk
 gspread
 google-auth
+psycopg2-binary
