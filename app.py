@@ -76,10 +76,11 @@ account_sheet = spreadsheet.worksheet(
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# LINE 操作權限白名單
-# Render 環境變數：ALLOWED_LINE_USER_IDS
-# 多個 user_id 用逗號分隔
-ALLOWED_LINE_USER_IDS = {
+# LINE 管理員名單
+# Render 環境變數仍沿用：ALLOWED_LINE_USER_IDS
+# 這裡放的是「管理員」LINE User ID
+# 多個管理員用逗號分隔
+ADMIN_LINE_USER_IDS = {
     item.strip()
     for item in os.getenv(
         "ALLOWED_LINE_USER_IDS",
@@ -121,8 +122,123 @@ def get_operator(event):
         return "未知"
 
 
-def is_authorized(operator):
-    return operator in ALLOWED_LINE_USER_IDS
+def is_admin(operator):
+    """Render ALLOWED_LINE_USER_IDS 內的人 = 管理員。"""
+    return operator in ADMIN_LINE_USER_IDS
+
+
+def is_authorized_user(operator):
+    """一般使用者權限存放在 Supabase authorized_users。"""
+    conn = get_db()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM authorized_users
+                WHERE line_user_id = %s
+                  AND active = TRUE
+                LIMIT 1
+                """,
+                (operator,),
+            )
+
+            return cur.fetchone() is not None
+
+    finally:
+        conn.close()
+
+
+def can_use_bot(operator):
+    """管理員或 active 的一般使用者都可以使用機器人。"""
+    if is_admin(operator):
+        return True
+
+    return is_authorized_user(operator)
+
+
+def add_authorized_user(line_user_id):
+    conn = get_db()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO authorized_users (
+                    line_user_id,
+                    active
+                )
+                VALUES (%s, TRUE)
+                ON CONFLICT (line_user_id)
+                DO UPDATE SET
+                    active = TRUE
+                """,
+                (line_user_id,),
+            )
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+def remove_authorized_user(line_user_id):
+    conn = get_db()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE authorized_users
+                SET active = FALSE
+                WHERE line_user_id = %s
+                  AND active = TRUE
+                """,
+                (line_user_id,),
+            )
+
+            changed = cur.rowcount
+
+        conn.commit()
+
+        return changed > 0
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+def get_authorized_users():
+    conn = get_db()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+            cur.execute(
+                """
+                SELECT
+                    line_user_id,
+                    note,
+                    created_at
+                FROM authorized_users
+                WHERE active = TRUE
+                ORDER BY created_at
+                """
+            )
+
+            return cur.fetchall()
+
+    finally:
+        conn.close()
 
 
 def reply(event, text):
@@ -808,11 +924,147 @@ def handle_message(event):
             return
 
         # ------------------------------------------
-        # 權限檢查
-        # 未列入白名單者不可操作機器人
+        # 管理員專用：加權限
+        # 加權限 Uxxxxxxxx
         # ------------------------------------------
 
-        if not is_authorized(operator):
+        if text.startswith("加權限 "):
+
+            if not is_admin(operator):
+                reply(
+                    event,
+                    "⛔ 只有管理員可以新增權限"
+                )
+                return
+
+            target_id = (
+                text[len("加權限 "):]
+                .strip()
+            )
+
+            if not target_id:
+                reply(
+                    event,
+                    "格式：加權限 LINE_USER_ID"
+                )
+                return
+
+            add_authorized_user(
+                target_id
+            )
+
+            reply(
+                event,
+                f"✅ 已新增權限\n"
+                f"{target_id}"
+            )
+            return
+
+
+        # ------------------------------------------
+        # 管理員專用：刪權限
+        # 刪權限 Uxxxxxxxx
+        # ------------------------------------------
+
+        if text.startswith("刪權限 "):
+
+            if not is_admin(operator):
+                reply(
+                    event,
+                    "⛔ 只有管理員可以刪除權限"
+                )
+                return
+
+            target_id = (
+                text[len("刪權限 "):]
+                .strip()
+            )
+
+            if not target_id:
+                reply(
+                    event,
+                    "格式：刪權限 LINE_USER_ID"
+                )
+                return
+
+            removed = remove_authorized_user(
+                target_id
+            )
+
+            if removed:
+                reply(
+                    event,
+                    f"✅ 已刪除權限\n"
+                    f"{target_id}"
+                )
+            else:
+                reply(
+                    event,
+                    f"⚠️ 找不到啟用中的權限\n"
+                    f"{target_id}"
+                )
+            return
+
+
+        # ------------------------------------------
+        # 管理員專用：權限名單
+        # ------------------------------------------
+
+        if text == "權限名單":
+
+            if not is_admin(operator):
+                reply(
+                    event,
+                    "⛔ 只有管理員可以查看權限名單"
+                )
+                return
+
+            users = get_authorized_users()
+
+            lines = [
+                "👑 管理員",
+            ]
+
+            if ADMIN_LINE_USER_IDS:
+                for admin_id in sorted(
+                    ADMIN_LINE_USER_IDS
+                ):
+                    lines.append(
+                        admin_id
+                    )
+            else:
+                lines.append(
+                    "（尚未設定）"
+                )
+
+            lines.append("")
+            lines.append(
+                "👤 一般使用者"
+            )
+
+            if users:
+                for user in users:
+                    lines.append(
+                        user["line_user_id"]
+                    )
+            else:
+                lines.append(
+                    "（目前沒有）"
+                )
+
+            reply(
+                event,
+                "\n".join(lines)
+            )
+            return
+
+
+        # ------------------------------------------
+        # 一般操作權限檢查
+        # 管理員或 authorized_users 才能使用
+        # ------------------------------------------
+
+        if not can_use_bot(operator):
             reply(
                 event,
                 "⛔ 你沒有操作權限\n"
@@ -1260,8 +1512,7 @@ def handle_message(event):
 
         if text == "指令":
 
-            reply(
-                event,
+            command_text = (
                 "📋 可用指令\n\n"
                 "查自己的ID：我的ID\n\n"
                 "記帳：小美 +1900\n"
@@ -1281,6 +1532,19 @@ def handle_message(event):
                 "撤回 TXxxxxxxxx\n\n"
                 "查訂單："
                 "查單 TXxxxxxxxx"
+            )
+
+            if is_admin(operator):
+                command_text += (
+                    "\n\n👑 管理員指令\n"
+                    "加權限 Uxxxxxxxx\n"
+                    "刪權限 Uxxxxxxxx\n"
+                    "權限名單"
+                )
+
+            reply(
+                event,
+                command_text
             )
             return
 
