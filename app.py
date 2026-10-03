@@ -1546,37 +1546,144 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # 發序號
+        # 出庫 / 發序號
         #
-        # 發 小美 MyCard1000 5
+        # 快速格式：
+        # /出大卡*10
+        # /發大卡*10
+        #
+        # 也保留原本格式：
+        # 發 小美 大卡 10
+        # 發 大卡*10
         # ------------------------------------------
 
-        if text.startswith("發 "):
+        quick_prefix = None
 
-            parts = text.split()
+        if text.startswith("/出"):
+            quick_prefix = "/出"
+        elif text.startswith("/發"):
+            quick_prefix = "/發"
 
-            if len(parts) != 4:
-                reply(
-                    event,
-                    "格式：\n"
-                    "發 客戶 商品 數量\n\n"
-                    "例如：\n"
-                    "發 小美 MyCard1000 5"
-                )
-                return
+        if (
+            quick_prefix
+            or text.startswith("發 ")
+        ):
 
-            customer = parts[1]
-            product_text = parts[2]
+            customer = ""
+            product_text = ""
+            quantity = None
 
-            try:
-                quantity = int(parts[3])
+            # ------------------------------
+            # 新快速格式：
+            # /出大卡*10
+            # /發大卡*10
+            # ------------------------------
+            if quick_prefix:
 
-            except ValueError:
-                reply(
-                    event,
-                    "⚠️ 數量必須是數字"
-                )
-                return
+                body = text[len(quick_prefix):].strip()
+
+                if "*" not in body:
+                    reply(
+                        event,
+                        "格式：\n"
+                        "/出產品*數量\n"
+                        "/發產品*數量\n\n"
+                        "例如：\n"
+                        "/出大卡*10\n"
+                        "/發大卡*10"
+                    )
+                    return
+
+                left, right = body.rsplit("*", 1)
+
+                product_text = left.strip()
+
+                try:
+                    quantity = int(
+                        right.strip()
+                    )
+                except ValueError:
+                    reply(
+                        event,
+                        "⚠️ 數量必須是數字\n"
+                        "例如：/出大卡*10"
+                    )
+                    return
+
+                if not product_text:
+                    reply(
+                        event,
+                        "⚠️ 請輸入商品\n"
+                        "例如：/出大卡*10"
+                    )
+                    return
+
+            # ------------------------------
+            # 原本格式：
+            # 發 大卡*10
+            # 發 小美 大卡 10
+            # ------------------------------
+            else:
+
+                body = text[len("發 "):].strip()
+
+                # 發 大卡*10
+                if "*" in body:
+
+                    left, right = body.rsplit("*", 1)
+
+                    product_text = left.strip()
+
+                    try:
+                        quantity = int(
+                            right.strip()
+                        )
+                    except ValueError:
+                        reply(
+                            event,
+                            "⚠️ 數量必須是數字\n"
+                            "例如：發 大卡*10"
+                        )
+                        return
+
+                    if not product_text:
+                        reply(
+                            event,
+                            "⚠️ 請輸入商品\n"
+                            "例如：發 大卡*10"
+                        )
+                        return
+
+                # 發 小美 大卡 10
+                else:
+
+                    parts = body.split()
+
+                    if len(parts) != 3:
+                        reply(
+                            event,
+                            "格式：\n"
+                            "發 客戶 商品 數量\n"
+                            "例如：發 小美 大卡 10\n\n"
+                            "快速格式：\n"
+                            "/出大卡*10\n"
+                            "/發大卡*10"
+                        )
+                        return
+
+                    customer = parts[0]
+                    product_text = parts[1]
+
+                    try:
+                        quantity = int(
+                            parts[2]
+                        )
+                    except ValueError:
+                        reply(
+                            event,
+                            "⚠️ 數量必須是數字"
+                        )
+                        return
 
             if (
                 quantity <= 0
@@ -1584,8 +1691,7 @@ def handle_message(event):
             ):
                 reply(
                     event,
-                    "⚠️ 一次發送數量"
-                    "需為 1～20"
+                    "⚠️ 一次發送數量需為 1～20"
                 )
                 return
 
@@ -1628,13 +1734,23 @@ def handle_message(event):
                 result["serials"]
             )
 
+            if customer:
+                summary_line = (
+                    f"{result['product']['code']} × {quantity}  "
+                    f"➡️《{customer}》"
+                )
+            else:
+                summary_line = (
+                    f"{result['product']['code']} × {quantity}"
+                )
+
             reply_messages(
                 event,
                 [
                     serial_text,
                     (
                         f"✅ 已出庫\n"
-                        f"{result['product']['code']} × {quantity}  ➡️《{customer}》\n"
+                        f"{summary_line}\n"
                         f"（訂單編號{result['order_no']}）"
                     ),
                 ],
@@ -1775,7 +1891,8 @@ def handle_message(event):
                 "序號1\n"
                 "序號2\n\n"
                 "出庫："
-                "發 小美 MyCard1000 5\n\n"
+                "發 小美 MyCard1000 5\n"
+                "快速出庫：/出大卡*10 或 /發大卡*10\n\n"
                 "撤回群組上一筆：撤回\n\n"
                 "查訂單："
                 "查單 TXxxxxxxxx"
