@@ -127,6 +127,22 @@ def reply(event, text):
         )
 
 
+def reply_messages(event, texts):
+    """一次回覆多個 LINE 文字泡泡。"""
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(text=str(item)[:4900])
+                    for item in texts
+                ],
+            )
+        )
+
+
 def create_order_no():
     now = datetime.now(
         ZoneInfo("Asia/Taipei")
@@ -788,18 +804,18 @@ def handle_message(event):
                 result["serials"]
             )
 
-            reply(
+            reply_messages(
                 event,
-                f"✅ 出庫完成\n"
-                f"客戶：{customer}\n"
-                f"商品："
-                f"{result['product']['code']}\n"
-                f"數量：{quantity}\n"
-                f"訂單："
-                f"{result['order_no']}\n\n"
-                f"{serial_text}\n\n"
-                f"剩餘庫存："
-                f"{result['remaining']} 張"
+                [
+                    serial_text,
+                    (
+                        f"✅ 已出庫｜"
+                        f"{result['product']['code']} × {quantity} "
+                        f"給：{customer}\n"
+                        f"（{result['order_no']}）\n"
+                        f"庫存剩餘：{result['remaining']} 張"
+                    ),
+                ],
             )
             return
 
