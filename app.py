@@ -1,10 +1,15 @@
 import os
+import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from flask import Flask, request, abort
+
 import gspread
 from google.oauth2.service_account import Credentials
+
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -20,23 +25,30 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = Flask(__name__)
 
-# =========================
-# LINE 設定
-# =========================
+
+# ==================================================
+# LINE
+# ==================================================
+
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
 handler = WebhookHandler(CHANNEL_SECRET)
-configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
+configuration = Configuration(
+    access_token=CHANNEL_ACCESS_TOKEN
+)
 
 
-# =========================
-# Google Sheet 安全設定
-# 只允許 Google Sheets API
-# 不使用 Google Drive API
-# =========================
+# ==================================================
+# Google Sheet
+# 目前只保留「帳務表」
+# ==================================================
+
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-GOOGLE_CREDENTIALS_FILE = "/etc/secrets/google-service-account.json"
+
+GOOGLE_CREDENTIALS_FILE = (
+    "/etc/secrets/google-service-account.json"
+)
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets"
@@ -44,18 +56,45 @@ SCOPES = [
 
 credentials = Credentials.from_service_account_file(
     GOOGLE_CREDENTIALS_FILE,
-    scopes=SCOPES
+    scopes=SCOPES,
 )
 
 gc = gspread.authorize(credentials)
 
-# 只用指定 Spreadsheet ID 開啟「小仙女」
-spreadsheet = gc.open_by_key(GOOGLE_SHEET_ID)
+spreadsheet = gc.open_by_key(
+    GOOGLE_SHEET_ID
+)
 
-account_sheet = spreadsheet.worksheet("帳務表")
-serial_sheet = spreadsheet.worksheet("序號表")
-log_sheet = spreadsheet.worksheet("交易紀錄")
+account_sheet = spreadsheet.worksheet(
+    "帳務表"
+)
 
+
+# ==================================================
+# Supabase PostgreSQL
+# ==================================================
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+
+def get_db():
+    conn = psycopg2.connect(
+        DATABASE_URL,
+        sslmode="require",
+        connect_timeout=10,
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SET TIME ZONE 'Asia/Taipei'"
+        )
+
+    return conn
+
+
+# ==================================================
+# 共用工具
+# ==================================================
 
 def now_tw():
     return datetime.now(
@@ -64,7 +103,6 @@ def now_tw():
 
 
 def get_operator(event):
-    """記錄 LINE 操作者 ID，不要求額外個資權限。"""
     try:
         return event.source.user_id or "未知"
     except Exception:
@@ -72,237 +110,87 @@ def get_operator(event):
 
 
 def reply(event, text):
+    # LINE 單則文字訊息避免過長
+    if len(text) > 4900:
+        text = text[:4850] + "\n\n⚠️ 內容過長，已截短。"
+
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
+
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=text)],
+                messages=[
+                    TextMessage(text=text)
+                ],
             )
         )
 
 
-# =========================
-# 網站健康檢查
-# =========================
-@app.route("/", methods=["GET"])
-def home():
-    return "LINE Bot is running!", 200
+def create_order_no():
+    now = datetime.now(
+        ZoneInfo("Asia/Taipei")
+    )
+
+    suffix = uuid.uuid4().hex[:6].upper()
+
+    return (
+        "TX"
+        + now.strftime("%Y%m%d%H%M%S")
+        + suffix
+    )
 
 
-# =========================
-# LINE Webhook
-# =========================
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers.get("X-Line-Signature", "")
-    body = request.get_data(as_text=True)
+def format_db_time(value):
+    if not value:
+        return ""
 
     try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-
-    return "OK", 200
-
-
-# =========================
-# LINE 指令
-# =========================
-@handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event):
-    text = event.message.text.strip()
-    operator = get_operator(event)
-
-    try:
-
-        # -------------------------
-        # 測試
-        # -------------------------
-        if text == "測試":
-            reply(event, "收到！機器人正常運作")
-            return
+        return value.astimezone(
+            ZoneInfo("Asia/Taipei")
+        ).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(value)
 
 
-        # -------------------------
-        # 記帳
-        # 範例：小美 +1900
-        #       小美 -1900
-        # -------------------------
-        parts = text.split()
+# ==================================================
+# 商品查詢
+# 商品代碼忽略英文大小寫
+# ==================================================
 
-        if len(parts) == 2:
-            customer = parts[0]
-            amount_text = parts[1]
+def find_product(conn, product_text):
+    with conn.cursor(
+        cursor_factory=RealDictCursor
+    ) as cur:
 
-            if (
-                amount_text.startswith("+")
-                or amount_text.startswith("-")
-            ):
-                try:
-                    amount = int(
-                        amount_text.replace(",", "")
-                    )
-                except ValueError:
-                    reply(event, "⚠️ 金額格式不正確")
-                    return
-
-                account_type = (
-                    "加帳" if amount > 0 else "收款"
-                )
-
-                account_sheet.append_row([
-                    now_tw(),
-                    customer,
-                    amount,
-                    account_type,
-                    "",
-                    operator,
-                ])
-
-                balance = get_customer_balance(customer)
-
-                reply(
-                    event,
-                    f"✅ 已記帳\n"
-                    f"客戶：{customer}\n"
-                    f"本次：{amount:+,}\n"
-                    f"目前餘額：{balance:,}"
-                )
-                return
-
-
-        # -------------------------
-        # 查帳
-        # 範例：查帳 小美
-        # -------------------------
-        if text.startswith("查帳 "):
-            customer = text[3:].strip()
-
-            if not customer:
-                reply(event, "請輸入客戶名稱")
-                return
-
-            balance = get_customer_balance(customer)
-
-            reply(
-                event,
-                f"👤 {customer}\n"
-                f"目前帳款：${balance:,}"
-            )
-            return
-
-
-        # -------------------------
-        # 庫存
-        # -------------------------
-        if text == "庫存":
-            records = serial_sheet.get_all_records()
-
-            inventory = {}
-
-            for row in records:
-                product = str(row.get("商品", "")).strip()
-                status = str(row.get("狀態", "")).strip()
-
-                if product and status == "未售":
-                    inventory[product] = (
-                        inventory.get(product, 0) + 1
-                    )
-
-            if not inventory:
-                reply(event, "📦 目前沒有未售庫存")
-                return
-
-            lines = ["📦 目前庫存"]
-
-            for product in sorted(inventory):
-                lines.append(
-                    f"{product}：{inventory[product]} 張"
-                )
-
-            reply(event, "\n".join(lines))
-            return
-
-
-        # -------------------------
-        # 發序號
-        # 範例：發 MyCard1000 2
-        # -------------------------
-        if text.startswith("發 "):
-            parts = text.split()
-
-            if len(parts) != 3:
-                reply(
-                    event,
-                    "格式：發 商品 數量\n"
-                    "例如：發 MyCard1000 2"
-                )
-                return
-
-            product = parts[1]
-
-            try:
-                quantity = int(parts[2])
-            except ValueError:
-                reply(event, "⚠️ 數量必須是數字")
-                return
-
-            if quantity <= 0 or quantity > 20:
-                reply(
-                    event,
-                    "⚠️ 一次發送數量需為 1～20"
-                )
-                return
-
-            send_serials(
-                event,
-                operator,
-                product,
-                quantity
-            )
-            return
-
-
-        # -------------------------
-        # 使用說明
-        # -------------------------
-        if text == "指令":
-            reply(
-                event,
-                "📋 可用指令\n"
-                "小美 +1900\n"
-                "小美 -1900\n"
-                "查帳 小美\n"
-                "庫存\n"
-                "發 MyCard1000 2"
-            )
-            return
-
-        reply(
-            event,
-            "看不懂這個指令 😆\n"
-            "輸入「指令」查看使用方式"
+        cur.execute(
+            """
+            SELECT id, code, name, active
+            FROM products
+            WHERE LOWER(code) = LOWER(%s)
+              AND active = TRUE
+            LIMIT 1
+            """,
+            (product_text,),
         )
 
-    except Exception as e:
-        print("BOT ERROR:", repr(e))
-        reply(
-            event,
-            "⚠️ 系統處理失敗，請稍後再試。"
-        )
+        return cur.fetchone()
 
 
-# =========================
-# 查客戶帳款
-# =========================
+# ==================================================
+# Google Sheet 帳務
+# ==================================================
+
 def get_customer_balance(customer):
     records = account_sheet.get_all_records()
 
     balance = 0
 
     for row in records:
-        if str(row.get("客戶", "")).strip() == customer:
+        if (
+            str(row.get("客戶", "")).strip()
+            == customer
+        ):
             try:
                 balance += int(
                     str(row.get("金額", 0))
@@ -314,140 +202,707 @@ def get_customer_balance(customer):
     return balance
 
 
-# =========================
-# 發序號 + 扣庫存
-# =========================
-def send_serials(event, operator, product, quantity):
+# ==================================================
+# Supabase：所有庫存
+# ==================================================
 
-    values = serial_sheet.get_all_values()
-
-    if len(values) <= 1:
-        reply(event, "⚠️ 序號表目前沒有資料")
-        return
-
-    headers = values[0]
+def get_all_inventory():
+    conn = get_db()
 
     try:
-        product_col = headers.index("商品")
-        serial_col = headers.index("序號")
-        status_col = headers.index("狀態")
-        sold_time_col = headers.index("售出時間")
-        operator_col = headers.index("操作人")
-    except ValueError:
-        reply(
-            event,
-            "⚠️ 序號表欄位名稱不正確"
-        )
-        return
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
 
-    available = []
+            cur.execute(
+                """
+                SELECT
+                    p.code,
+                    p.name,
+                    COUNT(s.id) AS stock
+                FROM products p
+                LEFT JOIN serials s
+                  ON s.product_id = p.id
+                 AND s.status = 'available'
+                WHERE p.active = TRUE
+                GROUP BY
+                    p.id,
+                    p.code,
+                    p.name
+                ORDER BY LOWER(p.code)
+                """
+            )
 
-    # 第 1 列是標題，所以從第 2 列開始
-    for sheet_row, row in enumerate(
-        values[1:],
-        start=2
-    ):
-        # 補足空白欄位
-        while len(row) < len(headers):
-            row.append("")
+            return cur.fetchall()
 
-        row_product = row[product_col].strip()
-        row_status = row[status_col].strip()
+    finally:
+        conn.close()
 
-        if (
-            row_product == product
-            and row_status == "未售"
-        ):
-            available.append({
-                "row": sheet_row,
-                "serial": row[serial_col],
-            })
 
-            if len(available) == quantity:
-                break
+# ==================================================
+# Supabase：單一商品庫存
+# ==================================================
 
-    if len(available) < quantity:
-        reply(
-            event,
-            f"⚠️ {product} 庫存不足\n"
-            f"目前只有 {len(available)} 張"
-        )
-        return
+def get_product_inventory(product_text):
+    conn = get_db()
 
-    sold_time = now_tw()
-    serials = []
-
-    for item in available:
-        row_number = item["row"]
-        serial = item["serial"]
-
-        # 狀態 → 已售
-        serial_sheet.update_cell(
-            row_number,
-            status_col + 1,
-            "已售"
+    try:
+        product = find_product(
+            conn,
+            product_text
         )
 
-        # 售出時間
-        serial_sheet.update_cell(
-            row_number,
-            sold_time_col + 1,
-            sold_time
+        if not product:
+            return None, None
+
+        with conn.cursor() as cur:
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM serials
+                WHERE product_id = %s
+                  AND status = 'available'
+                """,
+                (product["id"],),
+            )
+
+            count = cur.fetchone()[0]
+
+        return product, count
+
+    finally:
+        conn.close()
+
+
+# ==================================================
+# Supabase：發序號
+#
+# FOR UPDATE SKIP LOCKED：
+# 多人同時操作時避免拿到相同序號
+# ==================================================
+
+def sell_serials(
+    operator,
+    customer,
+    product_text,
+    quantity,
+):
+    conn = get_db()
+
+    try:
+        conn.autocommit = False
+
+        product = find_product(
+            conn,
+            product_text
         )
 
-        # 操作人
-        serial_sheet.update_cell(
-            row_number,
-            operator_col + 1,
-            operator
-        )
+        if not product:
+            conn.rollback()
 
-        serials.append(serial)
+            return {
+                "ok": False,
+                "reason": "product_not_found",
+            }
 
-    # 寫交易紀錄
-    log_sheet.append_row([
-        sold_time,
-        "發序號",
-        product,
-        quantity,
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            # 鎖住本次準備發出的序號
+            cur.execute(
+                """
+                SELECT id, serial
+                FROM serials
+                WHERE product_id = %s
+                  AND status = 'available'
+                ORDER BY id
+                FOR UPDATE SKIP LOCKED
+                LIMIT %s
+                """,
+                (
+                    product["id"],
+                    quantity,
+                ),
+            )
+
+            rows = cur.fetchall()
+
+            if len(rows) < quantity:
+                conn.rollback()
+
+                return {
+                    "ok": False,
+                    "reason": "not_enough",
+                    "available": len(rows),
+                    "product": product,
+                }
+
+            order_no = create_order_no()
+
+            serial_ids = [
+                row["id"]
+                for row in rows
+            ]
+
+            serial_values = [
+                row["serial"]
+                for row in rows
+            ]
+
+            # 更新序號狀態
+            cur.execute(
+                """
+                UPDATE serials
+                SET
+                    status = 'sold',
+                    sold_to = %s,
+                    order_no = %s,
+                    sold_at = NOW(),
+                    operator = %s
+                WHERE id = ANY(%s)
+                """,
+                (
+                    customer,
+                    order_no,
+                    operator,
+                    serial_ids,
+                ),
+            )
+
+            # 新增一筆交易紀錄
+            cur.execute(
+                """
+                INSERT INTO transactions (
+                    order_no,
+                    product_id,
+                    sold_to,
+                    quantity,
+                    operator
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    order_no,
+                    product["id"],
+                    customer,
+                    quantity,
+                    operator,
+                ),
+            )
+
+            # 查剩餘庫存
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM serials
+                WHERE product_id = %s
+                  AND status = 'available'
+                """,
+                (product["id"],),
+            )
+
+            remaining = cur.fetchone()["count"]
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "product": product,
+            "order_no": order_no,
+            "serials": serial_values,
+            "remaining": remaining,
+        }
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+# ==================================================
+# Supabase：查訂單
+# ==================================================
+
+def get_order(order_no):
+    conn = get_db()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            cur.execute(
+                """
+                SELECT
+                    t.order_no,
+                    t.sold_to,
+                    t.quantity,
+                    t.operator,
+                    t.created_at,
+                    p.code,
+                    p.name
+                FROM transactions t
+                JOIN products p
+                  ON p.id = t.product_id
+                WHERE LOWER(t.order_no)
+                      = LOWER(%s)
+                LIMIT 1
+                """,
+                (order_no,),
+            )
+
+            order = cur.fetchone()
+
+            if not order:
+                return None
+
+            cur.execute(
+                """
+                SELECT serial
+                FROM serials
+                WHERE order_no = %s
+                ORDER BY id
+                """,
+                (order["order_no"],),
+            )
+
+            serial_rows = cur.fetchall()
+
+            order["serials"] = [
+                row["serial"]
+                for row in serial_rows
+            ]
+
+            return order
+
+    finally:
+        conn.close()
+
+
+# ==================================================
+# 網站健康檢查
+# ==================================================
+
+@app.route("/", methods=["GET"])
+def home():
+    return "LINE Bot is running!", 200
+
+
+# ==================================================
+# LINE Webhook
+# ==================================================
+
+@app.route("/callback", methods=["POST"])
+def callback():
+
+    signature = request.headers.get(
+        "X-Line-Signature",
         "",
-        operator,
-        "",
-    ])
-
-    remaining = count_stock(product)
-
-    serial_text = "\n".join(serials)
-
-    reply(
-        event,
-        f"✅ 已發 {product} × {quantity}\n\n"
-        f"{serial_text}\n\n"
-        f"剩餘庫存：{remaining} 張"
     )
 
+    body = request.get_data(
+        as_text=True
+    )
 
-# =========================
-# 計算單一商品庫存
-# =========================
-def count_stock(product):
-    records = serial_sheet.get_all_records()
+    try:
+        handler.handle(
+            body,
+            signature,
+        )
 
-    count = 0
+    except InvalidSignatureError:
+        abort(400)
 
-    for row in records:
-        if (
-            str(row.get("商品", "")).strip() == product
-            and str(row.get("狀態", "")).strip() == "未售"
-        ):
-            count += 1
+    return "OK", 200
 
-    return count
 
+# ==================================================
+# LINE 指令
+# ==================================================
+
+@handler.add(
+    MessageEvent,
+    message=TextMessageContent,
+)
+def handle_message(event):
+
+    text = event.message.text.strip()
+
+    operator = get_operator(event)
+
+    try:
+
+        # ------------------------------------------
+        # 測試
+        # ------------------------------------------
+
+        if text == "測試":
+            reply(
+                event,
+                "收到！機器人正常運作"
+            )
+            return
+
+
+        # ------------------------------------------
+        # 記帳
+        # 小美 +1900
+        # 小美 -1900
+        # ------------------------------------------
+
+        parts = text.split()
+
+        if len(parts) == 2:
+
+            customer = parts[0]
+            amount_text = parts[1]
+
+            if (
+                amount_text.startswith("+")
+                or amount_text.startswith("-")
+            ):
+
+                try:
+                    amount = int(
+                        amount_text.replace(
+                            ",",
+                            "",
+                        )
+                    )
+
+                except ValueError:
+                    reply(
+                        event,
+                        "⚠️ 金額格式不正確"
+                    )
+                    return
+
+                account_type = (
+                    "加帳"
+                    if amount > 0
+                    else "收款"
+                )
+
+                account_sheet.append_row([
+                    now_tw(),
+                    customer,
+                    amount,
+                    account_type,
+                    "",
+                    operator,
+                ])
+
+                balance = get_customer_balance(
+                    customer
+                )
+
+                reply(
+                    event,
+                    f"✅ 已記帳\n"
+                    f"客戶：{customer}\n"
+                    f"本次：{amount:+,}\n"
+                    f"目前餘額：{balance:,}"
+                )
+                return
+
+
+        # ------------------------------------------
+        # 查帳
+        # ------------------------------------------
+
+        if text.startswith("查帳 "):
+
+            customer = text[3:].strip()
+
+            if not customer:
+                reply(
+                    event,
+                    "請輸入客戶名稱"
+                )
+                return
+
+            balance = get_customer_balance(
+                customer
+            )
+
+            reply(
+                event,
+                f"👤 {customer}\n"
+                f"目前帳款：${balance:,}"
+            )
+            return
+
+
+        # ------------------------------------------
+        # 全部庫存
+        # ------------------------------------------
+
+        if text == "庫存":
+
+            rows = get_all_inventory()
+
+            if not rows:
+                reply(
+                    event,
+                    "📦 目前沒有商品資料"
+                )
+                return
+
+            lines = [
+                "📦 目前庫存"
+            ]
+
+            for row in rows:
+                lines.append(
+                    f"{row['code']}："
+                    f"{row['stock']} 張"
+                )
+
+            reply(
+                event,
+                "\n".join(lines)
+            )
+            return
+
+
+        # ------------------------------------------
+        # 查單一商品庫存
+        #
+        # 查庫存 TEST100
+        # 查庫存 test100
+        # 兩者視為相同商品
+        # ------------------------------------------
+
+        if text.startswith("查庫存 "):
+
+            product_text = (
+                text[len("查庫存 "):]
+                .strip()
+            )
+
+            product, count = (
+                get_product_inventory(
+                    product_text
+                )
+            )
+
+            if not product:
+                reply(
+                    event,
+                    f"⚠️ 找不到商品："
+                    f"{product_text}"
+                )
+                return
+
+            reply(
+                event,
+                f"📦 {product['code']}\n"
+                f"{product['name']}\n"
+                f"目前庫存：{count} 張"
+            )
+            return
+
+
+        # ------------------------------------------
+        # 發序號
+        #
+        # 發 小美 MyCard1000 5
+        # ------------------------------------------
+
+        if text.startswith("發 "):
+
+            parts = text.split()
+
+            if len(parts) != 4:
+                reply(
+                    event,
+                    "格式：\n"
+                    "發 客戶 商品 數量\n\n"
+                    "例如：\n"
+                    "發 小美 MyCard1000 5"
+                )
+                return
+
+            customer = parts[1]
+            product_text = parts[2]
+
+            try:
+                quantity = int(parts[3])
+
+            except ValueError:
+                reply(
+                    event,
+                    "⚠️ 數量必須是數字"
+                )
+                return
+
+            if (
+                quantity <= 0
+                or quantity > 20
+            ):
+                reply(
+                    event,
+                    "⚠️ 一次發送數量"
+                    "需為 1～20"
+                )
+                return
+
+            result = sell_serials(
+                operator,
+                customer,
+                product_text,
+                quantity,
+            )
+
+            if not result["ok"]:
+
+                if (
+                    result["reason"]
+                    == "product_not_found"
+                ):
+                    reply(
+                        event,
+                        f"⚠️ 找不到商品："
+                        f"{product_text}"
+                    )
+                    return
+
+                if (
+                    result["reason"]
+                    == "not_enough"
+                ):
+                    reply(
+                        event,
+                        f"⚠️ "
+                        f"{result['product']['code']} "
+                        f"庫存不足\n"
+                        f"目前可用："
+                        f"{result['available']} 張"
+                    )
+                    return
+
+            serial_text = "\n".join(
+                result["serials"]
+            )
+
+            reply(
+                event,
+                f"✅ 出庫完成\n"
+                f"客戶：{customer}\n"
+                f"商品："
+                f"{result['product']['code']}\n"
+                f"數量：{quantity}\n"
+                f"訂單："
+                f"{result['order_no']}\n\n"
+                f"{serial_text}\n\n"
+                f"剩餘庫存："
+                f"{result['remaining']} 張"
+            )
+            return
+
+
+        # ------------------------------------------
+        # 查訂單
+        # ------------------------------------------
+
+        if text.startswith("查單 "):
+
+            order_no = text[3:].strip()
+
+            order = get_order(
+                order_no
+            )
+
+            if not order:
+                reply(
+                    event,
+                    f"⚠️ 找不到訂單："
+                    f"{order_no}"
+                )
+                return
+
+            serial_text = "\n".join(
+                order["serials"]
+            )
+
+            created_at = format_db_time(
+                order["created_at"]
+            )
+
+            reply(
+                event,
+                f"🧾 訂單資料\n"
+                f"訂單：{order['order_no']}\n"
+                f"客戶：{order['sold_to']}\n"
+                f"商品：{order['code']}\n"
+                f"數量：{order['quantity']}\n"
+                f"時間：{created_at}\n\n"
+                f"{serial_text}"
+            )
+            return
+
+
+        # ------------------------------------------
+        # 指令說明
+        # ------------------------------------------
+
+        if text == "指令":
+
+            reply(
+                event,
+                "📋 可用指令\n\n"
+                "記帳：小美 +1900\n"
+                "收款：小美 -1900\n"
+                "查帳：查帳 小美\n\n"
+                "全部庫存：庫存\n"
+                "單品庫存："
+                "查庫存 MyCard1000\n\n"
+                "出庫："
+                "發 小美 MyCard1000 5\n\n"
+                "查訂單："
+                "查單 TXxxxxxxxx"
+            )
+            return
+
+
+        reply(
+            event,
+            "看不懂這個指令 😆\n"
+            "輸入「指令」查看使用方式"
+        )
+
+    except Exception as e:
+
+        print(
+            "BOT ERROR:",
+            repr(e),
+        )
+
+        reply(
+            event,
+            "⚠️ 系統處理失敗，"
+            "請稍後再試。"
+        )
+
+
+# ==================================================
+# 啟動
+# ==================================================
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
+
+    port = int(
+        os.getenv(
+            "PORT",
+            10000,
+        )
+    )
+
     app.run(
         host="0.0.0.0",
-        port=port
+        port=port,
     )
