@@ -1022,6 +1022,84 @@ def undo_last_action(
 
 
 # ==================================================
+# Supabase：今日銷售
+# 以目前 LINE 群組 / 聊天室為主
+# ==================================================
+
+def get_today_sales(context_id):
+    conn = get_db()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            cur.execute(
+                """
+                SELECT
+                    p.code,
+                    SUM(t.quantity)::bigint AS quantity,
+                    COUNT(*)::bigint AS orders
+                FROM transactions t
+                JOIN products p
+                  ON p.id = t.product_id
+                WHERE t.group_id = %s
+                  AND t.created_at >= date_trunc(
+                        'day',
+                        NOW() AT TIME ZONE 'Asia/Taipei'
+                      ) AT TIME ZONE 'Asia/Taipei'
+                  AND t.created_at < (
+                        date_trunc(
+                            'day',
+                            NOW() AT TIME ZONE 'Asia/Taipei'
+                        ) + interval '1 day'
+                      ) AT TIME ZONE 'Asia/Taipei'
+                GROUP BY
+                    p.id,
+                    p.code
+                ORDER BY
+                    SUM(t.quantity) DESC,
+                    LOWER(p.code)
+                """,
+                (context_id,),
+            )
+
+            rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(SUM(quantity), 0)::bigint AS total_quantity,
+                    COUNT(*)::bigint AS total_orders
+                FROM transactions
+                WHERE group_id = %s
+                  AND created_at >= date_trunc(
+                        'day',
+                        NOW() AT TIME ZONE 'Asia/Taipei'
+                      ) AT TIME ZONE 'Asia/Taipei'
+                  AND created_at < (
+                        date_trunc(
+                            'day',
+                            NOW() AT TIME ZONE 'Asia/Taipei'
+                        ) + interval '1 day'
+                      ) AT TIME ZONE 'Asia/Taipei'
+                """,
+                (context_id,),
+            )
+
+            total = cur.fetchone()
+
+            return {
+                "rows": rows,
+                "total_quantity": total["total_quantity"],
+                "total_orders": total["total_orders"],
+            }
+
+    finally:
+        conn.close()
+
+
+# ==================================================
 # Supabase：查訂單
 # ==================================================
 
@@ -1831,6 +1909,50 @@ def handle_message(event):
 
 
         # ------------------------------------------
+        # 今日銷售
+        # 以目前 LINE 群組 / 聊天室為主
+        # ------------------------------------------
+
+        if text in (
+            "今日銷售",
+            "今天銷售",
+            "/今日銷售",
+        ):
+
+            sales = get_today_sales(
+                context_id
+            )
+
+            if not sales["rows"]:
+                reply(
+                    event,
+                    "📊 今日銷售\n"
+                    "目前尚無出庫紀錄"
+                )
+                return
+
+            lines = [
+                "📊 今日銷售",
+                f"總出庫：{sales['total_quantity']} 張",
+                f"訂單數：{sales['total_orders']} 筆",
+                "",
+            ]
+
+            for row in sales["rows"]:
+                lines.append(
+                    f"{row['code']}："
+                    f"{row['quantity']} 張"
+                    f"（{row['orders']} 筆）"
+                )
+
+            reply(
+                event,
+                "\n".join(lines)
+            )
+            return
+
+
+        # ------------------------------------------
         # 查訂單
         # ------------------------------------------
 
@@ -1894,6 +2016,7 @@ def handle_message(event):
                 "發 小美 MyCard1000 5\n"
                 "快速出庫：/出大卡*10 或 /發大卡*10\n\n"
                 "撤回群組上一筆：撤回\n\n"
+                "今日銷售：今日銷售\n"
                 "查訂單："
                 "查單 TXxxxxxxxx"
             )
