@@ -291,7 +291,6 @@ def sell_serials(
     conn = get_db()
 
     try:
-        conn.autocommit = False
 
         product = find_product(
             conn,
