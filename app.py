@@ -122,6 +122,32 @@ def get_operator(event):
         return "未知"
 
 
+def get_context_id(event):
+    """
+    以 LINE 群組為優先。
+    群組：group:<group_id>
+    多人聊天室：room:<room_id>
+    一對一聊天：user:<user_id>
+    """
+    try:
+        group_id = getattr(event.source, "group_id", None)
+        if group_id:
+            return f"group:{group_id}"
+
+        room_id = getattr(event.source, "room_id", None)
+        if room_id:
+            return f"room:{room_id}"
+
+        user_id = getattr(event.source, "user_id", None)
+        if user_id:
+            return f"user:{user_id}"
+
+    except Exception:
+        pass
+
+    return "unknown"
+
+
 def is_admin(operator):
     """Render ALLOWED_LINE_USER_IDS 內的人 = 管理員。"""
     return operator in ADMIN_LINE_USER_IDS
@@ -273,6 +299,20 @@ def reply_messages(event, texts):
                 ],
             )
         )
+
+
+def create_batch_no():
+    now = datetime.now(
+        ZoneInfo("Asia/Taipei")
+    )
+
+    suffix = uuid.uuid4().hex[:6].upper()
+
+    return (
+        "IN"
+        + now.strftime("%Y%m%d%H%M%S")
+        + suffix
+    )
 
 
 def create_order_no():
@@ -432,6 +472,7 @@ def get_product_inventory(product_text):
 
 def sell_serials(
     operator,
+    context_id,
     customer,
     product_text,
     quantity,
@@ -526,15 +567,35 @@ def sell_serials(
                     product_id,
                     sold_to,
                     quantity,
-                    operator
+                    operator,
+                    group_id
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
                     order_no,
                     product["id"],
                     customer,
                     quantity,
+                    operator,
+                    context_id,
+                ),
+            )
+
+            # 記錄這個群組的一次「出庫動作」
+            cur.execute(
+                """
+                INSERT INTO stock_actions (
+                    group_id,
+                    action_type,
+                    ref_no,
+                    operator
+                )
+                VALUES (%s, 'sale', %s, %s)
+                """,
+                (
+                    context_id,
+                    order_no,
                     operator,
                 ),
             )
@@ -577,6 +638,7 @@ def sell_serials(
 
 def stock_in_serials(
     operator,
+    context_id,
     product_text,
     serial_values,
 ):
@@ -596,6 +658,8 @@ def stock_in_serials(
                 "reason": "product_not_found",
             }
 
+        batch_no = create_batch_no()
+
         added = []
         duplicates = []
 
@@ -611,9 +675,10 @@ def stock_in_serials(
                         product_id,
                         serial,
                         status,
-                        operator
+                        operator,
+                        batch_no
                     )
-                    VALUES (%s, %s, 'available', %s)
+                    VALUES (%s, %s, 'available', %s, %s)
                     ON CONFLICT (serial)
                     DO NOTHING
                     RETURNING serial
@@ -622,6 +687,7 @@ def stock_in_serials(
                         product["id"],
                         serial_value,
                         operator,
+                        batch_no,
                     ),
                 )
 
@@ -635,6 +701,25 @@ def stock_in_serials(
                     duplicates.append(
                         serial_value
                     )
+
+            # 只有真的有新增序號，才記成一次可撤回動作
+            if added:
+                cur.execute(
+                    """
+                    INSERT INTO stock_actions (
+                        group_id,
+                        action_type,
+                        ref_no,
+                        operator
+                    )
+                    VALUES (%s, 'stock_in', %s, %s)
+                    """,
+                    (
+                        context_id,
+                        batch_no,
+                        operator,
+                    ),
+                )
 
             cur.execute(
                 """
@@ -653,6 +738,7 @@ def stock_in_serials(
         return {
             "ok": True,
             "product": product,
+            "batch_no": batch_no,
             "added": added,
             "duplicates": duplicates,
             "stock": stock,
@@ -672,10 +758,14 @@ def stock_in_serials(
 # 「撤回 TX...」＝撤回自己指定的訂單
 # ==================================================
 
-def undo_sale(
+def undo_last_action(
+    context_id,
     operator,
-    order_no=None,
 ):
+    """
+    撤回「這個群組 / 聊天室」最近一筆尚未撤回的庫存動作。
+    不分操作者，群組內有權限的人都可撤回群組上一筆。
+    """
     conn = get_db()
 
     try:
@@ -683,111 +773,245 @@ def undo_sale(
             cursor_factory=RealDictCursor
         ) as cur:
 
-            if order_no:
-                cur.execute(
-                    """
-                    SELECT
-                        t.id,
-                        t.order_no,
-                        t.sold_to,
-                        t.quantity,
-                        t.product_id,
-                        p.code,
-                        p.name
-                    FROM transactions t
-                    JOIN products p
-                      ON p.id = t.product_id
-                    WHERE LOWER(t.order_no) = LOWER(%s)
-                      AND t.operator = %s
-                    LIMIT 1
-                    FOR UPDATE OF t
-                    """,
-                    (
-                        order_no,
-                        operator,
-                    ),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT
-                        t.id,
-                        t.order_no,
-                        t.sold_to,
-                        t.quantity,
-                        t.product_id,
-                        p.code,
-                        p.name
-                    FROM transactions t
-                    JOIN products p
-                      ON p.id = t.product_id
-                    WHERE t.operator = %s
-                    ORDER BY
-                        t.created_at DESC,
-                        t.id DESC
-                    LIMIT 1
-                    FOR UPDATE OF t
-                    """,
-                    (operator,),
-                )
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    group_id,
+                    action_type,
+                    ref_no,
+                    operator,
+                    created_at
+                FROM stock_actions
+                WHERE group_id = %s
+                  AND undone = FALSE
+                ORDER BY
+                    created_at DESC,
+                    id DESC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (context_id,),
+            )
 
-            order = cur.fetchone()
+            action = cur.fetchone()
 
-            if not order:
+            if not action:
                 conn.rollback()
 
                 return {
                     "ok": False,
-                    "reason": "order_not_found",
+                    "reason": "nothing_to_undo",
                 }
 
-            cur.execute(
-                """
-                SELECT id, serial
-                FROM serials
-                WHERE order_no = %s
-                ORDER BY id
-                FOR UPDATE
-                """,
-                (order["order_no"],),
-            )
+            # ------------------------------
+            # 撤回入庫
+            # ------------------------------
+            if action["action_type"] == "stock_in":
 
-            serial_rows = cur.fetchall()
+                cur.execute(
+                    """
+                    SELECT
+                        s.id,
+                        s.serial,
+                        s.status,
+                        s.order_no,
+                        s.product_id,
+                        p.code,
+                        p.name
+                    FROM serials s
+                    JOIN products p
+                      ON p.id = s.product_id
+                    WHERE s.batch_no = %s
+                    ORDER BY s.id
+                    FOR UPDATE OF s
+                    """,
+                    (action["ref_no"],),
+                )
 
-            serial_values = [
-                row["serial"]
-                for row in serial_rows
-            ]
+                rows = cur.fetchall()
 
-            cur.execute(
-                """
-                UPDATE serials
-                SET
-                    status = 'available',
-                    sold_to = NULL,
-                    order_no = NULL,
-                    sold_at = NULL,
-                    operator = NULL
-                WHERE order_no = %s
-                """,
-                (order["order_no"],),
-            )
+                if not rows:
+                    conn.rollback()
 
-            cur.execute(
-                """
-                DELETE FROM transactions
-                WHERE id = %s
-                """,
-                (order["id"],),
-            )
+                    return {
+                        "ok": False,
+                        "reason": "stock_in_rows_missing",
+                    }
 
-        conn.commit()
+                # 如果這批序號後來已經被出庫，就不能整批刪除，
+                # 避免破壞後續訂單。
+                used_rows = [
+                    row
+                    for row in rows
+                    if (
+                        row["status"] != "available"
+                        or row["order_no"] is not None
+                    )
+                ]
 
-        return {
-            "ok": True,
-            "order": order,
-            "serials": serial_values,
-        }
+                if used_rows:
+                    conn.rollback()
+
+                    return {
+                        "ok": False,
+                        "reason": "stock_in_already_used",
+                        "used_count": len(used_rows),
+                        "batch_no": action["ref_no"],
+                    }
+
+                product = {
+                    "id": rows[0]["product_id"],
+                    "code": rows[0]["code"],
+                    "name": rows[0]["name"],
+                }
+
+                serial_values = [
+                    row["serial"]
+                    for row in rows
+                ]
+
+                cur.execute(
+                    """
+                    DELETE FROM serials
+                    WHERE batch_no = %s
+                    """,
+                    (action["ref_no"],),
+                )
+
+                cur.execute(
+                    """
+                    UPDATE stock_actions
+                    SET
+                        undone = TRUE,
+                        undone_at = NOW(),
+                        undone_by = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        operator,
+                        action["id"],
+                    ),
+                )
+
+                conn.commit()
+
+                return {
+                    "ok": True,
+                    "action_type": "stock_in",
+                    "ref_no": action["ref_no"],
+                    "product": product,
+                    "serials": serial_values,
+                    "quantity": len(serial_values),
+                }
+
+            # ------------------------------
+            # 撤回出庫
+            # ------------------------------
+            if action["action_type"] == "sale":
+
+                cur.execute(
+                    """
+                    SELECT
+                        t.id,
+                        t.order_no,
+                        t.sold_to,
+                        t.quantity,
+                        t.product_id,
+                        p.code,
+                        p.name
+                    FROM transactions t
+                    JOIN products p
+                      ON p.id = t.product_id
+                    WHERE t.order_no = %s
+                    LIMIT 1
+                    FOR UPDATE OF t
+                    """,
+                    (action["ref_no"],),
+                )
+
+                order = cur.fetchone()
+
+                if not order:
+                    conn.rollback()
+
+                    return {
+                        "ok": False,
+                        "reason": "sale_missing",
+                    }
+
+                cur.execute(
+                    """
+                    SELECT id, serial
+                    FROM serials
+                    WHERE order_no = %s
+                    ORDER BY id
+                    FOR UPDATE
+                    """,
+                    (order["order_no"],),
+                )
+
+                serial_rows = cur.fetchall()
+
+                serial_values = [
+                    row["serial"]
+                    for row in serial_rows
+                ]
+
+                cur.execute(
+                    """
+                    UPDATE serials
+                    SET
+                        status = 'available',
+                        sold_to = NULL,
+                        order_no = NULL,
+                        sold_at = NULL,
+                        operator = NULL
+                    WHERE order_no = %s
+                    """,
+                    (order["order_no"],),
+                )
+
+                cur.execute(
+                    """
+                    DELETE FROM transactions
+                    WHERE id = %s
+                    """,
+                    (order["id"],),
+                )
+
+                cur.execute(
+                    """
+                    UPDATE stock_actions
+                    SET
+                        undone = TRUE,
+                        undone_at = NOW(),
+                        undone_by = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        operator,
+                        action["id"],
+                    ),
+                )
+
+                conn.commit()
+
+                return {
+                    "ok": True,
+                    "action_type": "sale",
+                    "ref_no": action["ref_no"],
+                    "order": order,
+                    "serials": serial_values,
+                    "quantity": len(serial_values),
+                }
+
+            conn.rollback()
+
+            return {
+                "ok": False,
+                "reason": "unknown_action_type",
+            }
 
     except Exception:
         conn.rollback()
@@ -908,6 +1132,7 @@ def handle_message(event):
     text = raw_text.strip()
 
     operator = get_operator(event)
+    context_id = get_context_id(event)
 
     try:
 
@@ -1291,6 +1516,7 @@ def handle_message(event):
 
             result = stock_in_serials(
                 operator,
+                context_id,
                 product_text,
                 serial_values,
             )
@@ -1365,6 +1591,7 @@ def handle_message(event):
 
             result = sell_serials(
                 operator,
+                context_id,
                 customer,
                 product_text,
                 quantity,
@@ -1416,53 +1643,75 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # 撤回出庫
-        #
         # 撤回
-        # 撤回 TXxxxxxxxx
+        #
+        # 撤回這個群組 / 聊天室的上一筆庫存動作
+        # 不管上一筆是入庫或出庫
         # ------------------------------------------
 
-        if (
-            text == "撤回"
-            or text.startswith("撤回 ")
-        ):
+        if text == "撤回":
 
-            order_no = None
-
-            if text.startswith("撤回 "):
-                order_no = (
-                    text[len("撤回 "):]
-                    .strip()
-                )
-
-                if not order_no:
-                    order_no = None
-
-            result = undo_sale(
+            result = undo_last_action(
+                context_id,
                 operator,
-                order_no,
             )
 
             if not result["ok"]:
+
+                if (
+                    result["reason"]
+                    == "nothing_to_undo"
+                ):
+                    reply(
+                        event,
+                        "⚠️ 這個群組目前沒有可撤回的上一筆動作"
+                    )
+                    return
+
+                if (
+                    result["reason"]
+                    == "stock_in_already_used"
+                ):
+                    reply(
+                        event,
+                        "⚠️ 無法撤回這次入庫\n"
+                        "這一批裡已有序號被出庫，"
+                        "為避免破壞訂單，系統沒有刪除。"
+                    )
+                    return
+
                 reply(
                     event,
-                    "⚠️ 找不到可撤回的出庫訂單"
+                    "⚠️ 這筆動作目前無法撤回"
                 )
                 return
 
-            restored = len(
-                result["serials"]
-            )
+            if (
+                result["action_type"]
+                == "stock_in"
+            ):
+                reply(
+                    event,
+                    f"↩️ 已撤回上一筆入庫\n"
+                    f"{result['product']['code']} × "
+                    f"{result['quantity']} 張\n"
+                    f"（批次編號{result['ref_no']}）"
+                )
+                return
 
-            reply(
-                event,
-                f"↩️ 已撤回出庫\n"
-                f"{result['order']['code']} × {restored}\n"
-                f"原客戶：《{result['order']['sold_to']}》\n"
-                f"（訂單編號{result['order']['order_no']}）\n"
-                f"序號已恢復庫存"
-            )
-            return
+            if (
+                result["action_type"]
+                == "sale"
+            ):
+                reply(
+                    event,
+                    f"↩️ 已撤回上一筆出庫\n"
+                    f"{result['order']['code']} × "
+                    f"{result['quantity']}\n"
+                    f"原客戶：《{result['order']['sold_to']}》\n"
+                    f"（訂單編號{result['ref_no']}）"
+                )
+                return
 
 
         # ------------------------------------------
@@ -1527,9 +1776,7 @@ def handle_message(event):
                 "序號2\n\n"
                 "出庫："
                 "發 小美 MyCard1000 5\n\n"
-                "撤回最後一筆：撤回\n"
-                "撤回指定訂單："
-                "撤回 TXxxxxxxxx\n\n"
+                "撤回群組上一筆：撤回\n\n"
                 "查訂單："
                 "查單 TXxxxxxxxx"
             )
