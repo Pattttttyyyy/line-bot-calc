@@ -76,6 +76,18 @@ account_sheet = spreadsheet.worksheet(
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# LINE 操作權限白名單
+# Render 環境變數：ALLOWED_LINE_USER_IDS
+# 多個 user_id 用逗號分隔
+ALLOWED_LINE_USER_IDS = {
+    item.strip()
+    for item in os.getenv(
+        "ALLOWED_LINE_USER_IDS",
+        ""
+    ).split(",")
+    if item.strip()
+}
+
 
 def get_db():
     conn = psycopg2.connect(
@@ -107,6 +119,10 @@ def get_operator(event):
         return event.source.user_id or "未知"
     except Exception:
         return "未知"
+
+
+def is_authorized(operator):
+    return operator in ALLOWED_LINE_USER_IDS
 
 
 def reply(event, text):
@@ -780,6 +796,31 @@ def handle_message(event):
     try:
 
         # ------------------------------------------
+        # 查自己的 LINE User ID
+        # 這個指令不需要權限，方便設定白名單
+        # ------------------------------------------
+
+        if text == "我的ID":
+            reply(
+                event,
+                f"你的 LINE User ID：\n{operator}"
+            )
+            return
+
+        # ------------------------------------------
+        # 權限檢查
+        # 未列入白名單者不可操作機器人
+        # ------------------------------------------
+
+        if not is_authorized(operator):
+            reply(
+                event,
+                "⛔ 你沒有操作權限\n"
+                "如需開通，請輸入「我的ID」"
+            )
+            return
+
+        # ------------------------------------------
         # 測試
         # ------------------------------------------
 
@@ -1222,6 +1263,7 @@ def handle_message(event):
             reply(
                 event,
                 "📋 可用指令\n\n"
+                "查自己的ID：我的ID\n\n"
                 "記帳：小美 +1900\n"
                 "收款：小美 -1900\n"
                 "查帳：查帳 小美\n\n"
