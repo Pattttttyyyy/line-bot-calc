@@ -439,6 +439,233 @@ def sell_serials(
 
 
 # ==================================================
+# Supabase：入庫
+# 一行一個序號；序號內容原樣保存
+# ==================================================
+
+def stock_in_serials(
+    operator,
+    product_text,
+    serial_values,
+):
+    conn = get_db()
+
+    try:
+        product = find_product(
+            conn,
+            product_text
+        )
+
+        if not product:
+            conn.rollback()
+
+            return {
+                "ok": False,
+                "reason": "product_not_found",
+            }
+
+        added = []
+        duplicates = []
+
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            for serial_value in serial_values:
+
+                cur.execute(
+                    """
+                    INSERT INTO serials (
+                        product_id,
+                        serial,
+                        status,
+                        operator
+                    )
+                    VALUES (%s, %s, 'available', %s)
+                    ON CONFLICT (serial)
+                    DO NOTHING
+                    RETURNING serial
+                    """,
+                    (
+                        product["id"],
+                        serial_value,
+                        operator,
+                    ),
+                )
+
+                row = cur.fetchone()
+
+                if row:
+                    added.append(
+                        row["serial"]
+                    )
+                else:
+                    duplicates.append(
+                        serial_value
+                    )
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM serials
+                WHERE product_id = %s
+                  AND status = 'available'
+                """,
+                (product["id"],),
+            )
+
+            stock = cur.fetchone()["count"]
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "product": product,
+            "added": added,
+            "duplicates": duplicates,
+            "stock": stock,
+        }
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+# ==================================================
+# Supabase：撤回出庫
+# 「撤回」＝撤回自己最後一筆出庫
+# 「撤回 TX...」＝撤回自己指定的訂單
+# ==================================================
+
+def undo_sale(
+    operator,
+    order_no=None,
+):
+    conn = get_db()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            if order_no:
+                cur.execute(
+                    """
+                    SELECT
+                        t.id,
+                        t.order_no,
+                        t.sold_to,
+                        t.quantity,
+                        t.product_id,
+                        p.code,
+                        p.name
+                    FROM transactions t
+                    JOIN products p
+                      ON p.id = t.product_id
+                    WHERE LOWER(t.order_no) = LOWER(%s)
+                      AND t.operator = %s
+                    LIMIT 1
+                    FOR UPDATE OF t
+                    """,
+                    (
+                        order_no,
+                        operator,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                        t.id,
+                        t.order_no,
+                        t.sold_to,
+                        t.quantity,
+                        t.product_id,
+                        p.code,
+                        p.name
+                    FROM transactions t
+                    JOIN products p
+                      ON p.id = t.product_id
+                    WHERE t.operator = %s
+                    ORDER BY
+                        t.created_at DESC,
+                        t.id DESC
+                    LIMIT 1
+                    FOR UPDATE OF t
+                    """,
+                    (operator,),
+                )
+
+            order = cur.fetchone()
+
+            if not order:
+                conn.rollback()
+
+                return {
+                    "ok": False,
+                    "reason": "order_not_found",
+                }
+
+            cur.execute(
+                """
+                SELECT id, serial
+                FROM serials
+                WHERE order_no = %s
+                ORDER BY id
+                FOR UPDATE
+                """,
+                (order["order_no"],),
+            )
+
+            serial_rows = cur.fetchall()
+
+            serial_values = [
+                row["serial"]
+                for row in serial_rows
+            ]
+
+            cur.execute(
+                """
+                UPDATE serials
+                SET
+                    status = 'available',
+                    sold_to = NULL,
+                    order_no = NULL,
+                    sold_at = NULL,
+                    operator = NULL
+                WHERE order_no = %s
+                """,
+                (order["order_no"],),
+            )
+
+            cur.execute(
+                """
+                DELETE FROM transactions
+                WHERE id = %s
+                """,
+                (order["id"],),
+            )
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "order": order,
+            "serials": serial_values,
+        }
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+# ==================================================
 # Supabase：查訂單
 # ==================================================
 
@@ -545,7 +772,8 @@ def callback():
 )
 def handle_message(event):
 
-    text = event.message.text.strip()
+    raw_text = event.message.text
+    text = raw_text.strip()
 
     operator = get_operator(event)
 
@@ -723,6 +951,82 @@ def handle_message(event):
 
 
         # ------------------------------------------
+        # 入庫
+        #
+        # 入庫 test100
+        # Abc001xY
+        # TEST-002
+        # 120 556 AA
+        # ------------------------------------------
+
+        if text.startswith("入庫 "):
+
+            raw_lines = raw_text.splitlines()
+
+            first_line = (
+                raw_lines[0]
+                .strip()
+            )
+
+            product_text = (
+                first_line[len("入庫 "):]
+                .strip()
+            )
+
+            serial_values = [
+                line
+                for line in raw_lines[1:]
+                if line.strip() != ""
+            ]
+
+            if (
+                not product_text
+                or not serial_values
+            ):
+                reply(
+                    event,
+                    "格式：\n"
+                    "入庫 商品\n"
+                    "序號1\n"
+                    "序號2\n\n"
+                    "例如：\n"
+                    "入庫 test100\n"
+                    "ABC001\n"
+                    "120 556 AA"
+                )
+                return
+
+            result = stock_in_serials(
+                operator,
+                product_text,
+                serial_values,
+            )
+
+            if not result["ok"]:
+
+                if (
+                    result["reason"]
+                    == "product_not_found"
+                ):
+                    reply(
+                        event,
+                        f"⚠️ 找不到商品："
+                        f"{product_text}"
+                    )
+                    return
+
+            reply(
+                event,
+                f"✅ 入庫完成\n"
+                f"{result['product']['code']}\n"
+                f"新增：{len(result['added'])} 張\n"
+                f"重複：{len(result['duplicates'])} 張\n"
+                f"目前庫存：{result['stock']} 張"
+            )
+            return
+
+
+        # ------------------------------------------
         # 發序號
         #
         # 發 小美 MyCard1000 5
@@ -819,6 +1123,56 @@ def handle_message(event):
 
 
         # ------------------------------------------
+        # 撤回出庫
+        #
+        # 撤回
+        # 撤回 TXxxxxxxxx
+        # ------------------------------------------
+
+        if (
+            text == "撤回"
+            or text.startswith("撤回 ")
+        ):
+
+            order_no = None
+
+            if text.startswith("撤回 "):
+                order_no = (
+                    text[len("撤回 "):]
+                    .strip()
+                )
+
+                if not order_no:
+                    order_no = None
+
+            result = undo_sale(
+                operator,
+                order_no,
+            )
+
+            if not result["ok"]:
+                reply(
+                    event,
+                    "⚠️ 找不到可撤回的出庫訂單"
+                )
+                return
+
+            restored = len(
+                result["serials"]
+            )
+
+            reply(
+                event,
+                f"↩️ 已撤回出庫\n"
+                f"{result['order']['code']} × {restored}\n"
+                f"原客戶：《{result['order']['sold_to']}》\n"
+                f"（訂單編號{result['order']['order_no']}）\n"
+                f"序號已恢復庫存"
+            )
+            return
+
+
+        # ------------------------------------------
         # 查訂單
         # ------------------------------------------
 
@@ -874,8 +1228,15 @@ def handle_message(event):
                 "全部庫存：庫存\n"
                 "單品庫存："
                 "查庫存 MyCard1000\n\n"
+                "入庫：\n"
+                "入庫 MyCard1000\n"
+                "序號1\n"
+                "序號2\n\n"
                 "出庫："
                 "發 小美 MyCard1000 5\n\n"
+                "撤回最後一筆：撤回\n"
+                "撤回指定訂單："
+                "撤回 TXxxxxxxxx\n\n"
                 "查訂單："
                 "查單 TXxxxxxxxx"
             )
