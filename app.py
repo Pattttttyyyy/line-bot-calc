@@ -76,6 +76,21 @@ account_sheet = spreadsheet.worksheet(
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# 快速出庫別名
+# /大10、/大*10、/1490*60 ... 會轉成正式商品 code
+QUICK_PRODUCT_ALIASES = {
+    "大": "大卡",
+    "小": "小卡",
+    "500": "貝500",
+    "1000": "貝1000",
+    "1490": "貝1490",
+    "2990": "貝2990",
+    "M3": "MY3000",
+    "M5": "MY5000",
+    "M1W": "MY1萬",
+}
+
+
 # LINE 管理員名單
 # Render 環境變數仍沿用：ALLOWED_LINE_USER_IDS
 # 這裡放的是「管理員」LINE User ID
@@ -463,6 +478,438 @@ def get_product_inventory(product_text):
         conn.close()
 
 
+def resolve_quick_product_alias(value):
+    key = value.strip()
+
+    # 英文字母別名忽略大小寫
+    for alias, product_code in QUICK_PRODUCT_ALIASES.items():
+        if alias.upper() == key.upper():
+            return product_code
+
+    # 不在別名表時，直接把輸入當正式商品 code
+    return key
+
+
+def parse_quick_sale_line(line):
+    """
+    支援：
+    /大10
+    /大*10
+    /1490*60
+    /出大10
+    /發大*10
+    /MY3000*5
+
+    無 * 時，為避免正式商品 code 與數量黏在一起產生歧義，
+    只接受已設定的快速別名。
+    """
+    value = line.strip()
+
+    if not value.startswith("/"):
+        return None
+
+    body = value[1:].strip()
+
+    if body.startswith("出") or body.startswith("發"):
+        body = body[1:].strip()
+
+    if not body:
+        return {
+            "ok": False,
+            "reason": "empty",
+        }
+
+    # 有 *：左邊可用別名，也可直接正式商品 code
+    if "*" in body:
+        left, right = body.rsplit("*", 1)
+
+        product_key = left.strip()
+        qty_text = right.strip()
+
+        if not product_key or not qty_text.isdigit():
+            return {
+                "ok": False,
+                "reason": "format",
+            }
+
+        return {
+            "ok": True,
+            "product_text": resolve_quick_product_alias(
+                product_key
+            ),
+            "quantity": int(qty_text),
+        }
+
+    # 無 *：只對快速別名做「別名 + 數量」辨識
+    # 長別名優先，避免 1 / 10 / 1000 類型誤判
+    aliases = sorted(
+        QUICK_PRODUCT_ALIASES.keys(),
+        key=len,
+        reverse=True,
+    )
+
+    for alias in aliases:
+        if body[:len(alias)].upper() == alias.upper():
+            qty_text = body[len(alias):].strip()
+
+            if qty_text.isdigit():
+                return {
+                    "ok": True,
+                    "product_text": QUICK_PRODUCT_ALIASES[alias],
+                    "quantity": int(qty_text),
+                }
+
+    return {
+        "ok": False,
+        "reason": "format",
+    }
+
+
+def parse_quick_sale_message(raw_text):
+    """
+    只要整則訊息的非空白行都以 / 開頭，
+    就視為快速多品項出庫。
+    """
+    lines = [
+        line.strip()
+        for line in raw_text.splitlines()
+        if line.strip()
+    ]
+
+    if not lines:
+        return None
+
+    if not all(
+        line.startswith("/")
+        for line in lines
+    ):
+        return None
+
+    parsed = []
+
+    for line in lines:
+        item = parse_quick_sale_line(line)
+
+        if not item or not item.get("ok"):
+            return {
+                "ok": False,
+                "reason": "format",
+                "line": line,
+            }
+
+        if (
+            item["quantity"] <= 0
+            or item["quantity"] > 500
+        ):
+            return {
+                "ok": False,
+                "reason": "quantity",
+                "line": line,
+            }
+
+        parsed.append(item)
+
+    # 同商品重複出現時，自動合併數量
+    merged = []
+    positions = {}
+
+    for item in parsed:
+        key = item["product_text"].lower()
+
+        if key in positions:
+            merged[positions[key]]["quantity"] += item["quantity"]
+        else:
+            positions[key] = len(merged)
+            merged.append({
+                "product_text": item["product_text"],
+                "quantity": item["quantity"],
+            })
+
+    total_quantity = sum(
+        item["quantity"]
+        for item in merged
+    )
+
+    if total_quantity > 500:
+        return {
+            "ok": False,
+            "reason": "total_quantity",
+        }
+
+    return {
+        "ok": True,
+        "items": merged,
+        "total_quantity": total_quantity,
+    }
+
+
+def split_text_chunks(text, max_len=4300):
+    """
+    LINE 單則文字訊息上限約 5000 字元。
+    保守切在 4300，並盡量依換行切開。
+    """
+    if len(text) <= max_len:
+        return [text]
+
+    chunks = []
+    current = []
+
+    current_len = 0
+
+    for line in text.splitlines():
+        add_len = len(line) + 1
+
+        if (
+            current
+            and current_len + add_len > max_len
+        ):
+            chunks.append(
+                "\n".join(current)
+            )
+            current = []
+            current_len = 0
+
+        current.append(line)
+        current_len += add_len
+
+    if current:
+        chunks.append(
+            "\n".join(current)
+        )
+
+    return chunks
+
+
+def sell_multiple_items(
+    operator,
+    context_id,
+    customer,
+    requested_items,
+):
+    """
+    多品項一次出庫：
+    - 全部庫存都足夠才會一起成功
+    - 任一商品不足就整筆 rollback
+    - 共用同一個「批次訂單編號」
+    - 每個商品仍有自己的 child order_no
+    - stock_actions 只記 1 筆，因此「撤回」會整批撤回
+    """
+    conn = get_db()
+
+    try:
+        prepared = []
+
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            # 先查商品、鎖定各品項序號。
+            for requested in requested_items:
+
+                product = find_product(
+                    conn,
+                    requested["product_text"],
+                )
+
+                if not product:
+                    conn.rollback()
+
+                    return {
+                        "ok": False,
+                        "reason": "product_not_found",
+                        "product_text": requested["product_text"],
+                    }
+
+                quantity = requested["quantity"]
+
+                cur.execute(
+                    """
+                    SELECT id, serial
+                    FROM serials
+                    WHERE product_id = %s
+                      AND status = 'available'
+                    ORDER BY id
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT %s
+                    """,
+                    (
+                        product["id"],
+                        quantity,
+                    ),
+                )
+
+                rows = cur.fetchall()
+
+                if len(rows) < quantity:
+                    # 再查實際可用總數，讓錯誤訊息更清楚
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM serials
+                        WHERE product_id = %s
+                          AND status = 'available'
+                        """,
+                        (product["id"],),
+                    )
+
+                    available = cur.fetchone()["count"]
+
+                    conn.rollback()
+
+                    return {
+                        "ok": False,
+                        "reason": "not_enough",
+                        "product": product,
+                        "available": available,
+                        "requested": quantity,
+                    }
+
+                prepared.append({
+                    "product": product,
+                    "quantity": quantity,
+                    "rows": rows,
+                })
+
+            sale_batch_no = create_order_no()
+
+            result_items = []
+
+            for index, item in enumerate(
+                prepared,
+                start=1,
+            ):
+                child_order_no = (
+                    f"{sale_batch_no}-{index:02d}"
+                )
+
+                serial_ids = [
+                    row["id"]
+                    for row in item["rows"]
+                ]
+
+                serial_values = [
+                    row["serial"]
+                    for row in item["rows"]
+                ]
+
+                cur.execute(
+                    """
+                    UPDATE serials
+                    SET
+                        status = 'sold',
+                        sold_to = %s,
+                        order_no = %s,
+                        sold_at = NOW(),
+                        operator = %s
+                    WHERE id = ANY(%s)
+                    """,
+                    (
+                        customer,
+                        child_order_no,
+                        operator,
+                        serial_ids,
+                    ),
+                )
+
+                cur.execute(
+                    """
+                    INSERT INTO transactions (
+                        order_no,
+                        product_id,
+                        sold_to,
+                        quantity,
+                        operator,
+                        group_id,
+                        sale_batch_no
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        child_order_no,
+                        item["product"]["id"],
+                        customer,
+                        item["quantity"],
+                        operator,
+                        context_id,
+                        sale_batch_no,
+                    ),
+                )
+
+                result_items.append({
+                    "product": item["product"],
+                    "quantity": item["quantity"],
+                    "order_no": child_order_no,
+                    "serials": serial_values,
+                })
+
+            cur.execute(
+                """
+                INSERT INTO stock_actions (
+                    group_id,
+                    action_type,
+                    ref_no,
+                    operator
+                )
+                VALUES (%s, 'sale', %s, %s)
+                """,
+                (
+                    context_id,
+                    sale_batch_no,
+                    operator,
+                ),
+            )
+
+        # 先組回覆內容，若 LINE 需要超過 5 則，
+        # 就不提交，避免出庫成功卻拿不完整序號。
+        serial_sections = []
+
+        for item in result_items:
+            section = [
+                f"【{item['product']['code']} × {item['quantity']}】"
+            ]
+            section.extend(
+                item["serials"]
+            )
+
+            serial_sections.append(
+                "\n".join(section)
+            )
+
+        serial_text = "\n\n".join(
+            serial_sections
+        )
+
+        serial_chunks = split_text_chunks(
+            serial_text
+        )
+
+        # LINE Reply API 單次最多 5 則：
+        # 最多 4 則序號 + 1 則摘要。
+        if len(serial_chunks) > 4:
+            conn.rollback()
+
+            return {
+                "ok": False,
+                "reason": "reply_too_long",
+            }
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "sale_batch_no": sale_batch_no,
+            "items": result_items,
+            "serial_chunks": serial_chunks,
+        }
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
 # ==================================================
 # Supabase：發序號
 #
@@ -568,9 +1015,10 @@ def sell_serials(
                     sold_to,
                     quantity,
                     operator,
-                    group_id
+                    group_id,
+                    sale_batch_no
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     order_no,
@@ -579,6 +1027,7 @@ def sell_serials(
                     quantity,
                     operator,
                     context_id,
+                    order_no,
                 ),
             )
 
@@ -906,7 +1355,7 @@ def undo_last_action(
                 }
 
             # ------------------------------
-            # 撤回出庫
+            # 撤回出庫（單品 / 多品項都整批撤回）
             # ------------------------------
             if action["action_type"] == "sale":
 
@@ -915,6 +1364,7 @@ def undo_last_action(
                     SELECT
                         t.id,
                         t.order_no,
+                        t.sale_batch_no,
                         t.sold_to,
                         t.quantity,
                         t.product_id,
@@ -923,16 +1373,19 @@ def undo_last_action(
                     FROM transactions t
                     JOIN products p
                       ON p.id = t.product_id
-                    WHERE t.order_no = %s
-                    LIMIT 1
+                    WHERE COALESCE(
+                        t.sale_batch_no,
+                        t.order_no
+                    ) = %s
+                    ORDER BY t.id
                     FOR UPDATE OF t
                     """,
                     (action["ref_no"],),
                 )
 
-                order = cur.fetchone()
+                orders = cur.fetchall()
 
-                if not order:
+                if not orders:
                     conn.rollback()
 
                     return {
@@ -940,23 +1393,42 @@ def undo_last_action(
                         "reason": "sale_missing",
                     }
 
-                cur.execute(
-                    """
-                    SELECT id, serial
-                    FROM serials
-                    WHERE order_no = %s
-                    ORDER BY id
-                    FOR UPDATE
-                    """,
-                    (order["order_no"],),
-                )
-
-                serial_rows = cur.fetchall()
-
-                serial_values = [
-                    row["serial"]
-                    for row in serial_rows
+                order_nos = [
+                    order["order_no"]
+                    for order in orders
                 ]
+
+                items = []
+
+                for order in orders:
+
+                    cur.execute(
+                        """
+                        SELECT id, serial
+                        FROM serials
+                        WHERE order_no = %s
+                        ORDER BY id
+                        FOR UPDATE
+                        """,
+                        (order["order_no"],),
+                    )
+
+                    serial_rows = cur.fetchall()
+
+                    items.append({
+                        "product": {
+                            "id": order["product_id"],
+                            "code": order["code"],
+                            "name": order["name"],
+                        },
+                        "quantity": order["quantity"],
+                        "sold_to": order["sold_to"],
+                        "order_no": order["order_no"],
+                        "serials": [
+                            row["serial"]
+                            for row in serial_rows
+                        ],
+                    })
 
                 cur.execute(
                     """
@@ -967,17 +1439,17 @@ def undo_last_action(
                         order_no = NULL,
                         sold_at = NULL,
                         operator = NULL
-                    WHERE order_no = %s
+                    WHERE order_no = ANY(%s)
                     """,
-                    (order["order_no"],),
+                    (order_nos,),
                 )
 
                 cur.execute(
                     """
                     DELETE FROM transactions
-                    WHERE id = %s
+                    WHERE order_no = ANY(%s)
                     """,
-                    (order["id"],),
+                    (order_nos,),
                 )
 
                 cur.execute(
@@ -1001,9 +1473,11 @@ def undo_last_action(
                     "ok": True,
                     "action_type": "sale",
                     "ref_no": action["ref_no"],
-                    "order": order,
-                    "serials": serial_values,
-                    "quantity": len(serial_values),
+                    "items": items,
+                    "quantity": sum(
+                        item["quantity"]
+                        for item in items
+                    ),
                 }
 
             conn.rollback()
@@ -1039,7 +1513,7 @@ def get_today_sales(context_id):
                 SELECT
                     p.code,
                     SUM(t.quantity)::bigint AS quantity,
-                    COUNT(*)::bigint AS orders
+                    COUNT(DISTINCT COALESCE(t.sale_batch_no, t.order_no))::bigint AS orders
                 FROM transactions t
                 JOIN products p
                   ON p.id = t.product_id
@@ -1070,7 +1544,7 @@ def get_today_sales(context_id):
                 """
                 SELECT
                     COALESCE(SUM(quantity), 0)::bigint AS total_quantity,
-                    COUNT(*)::bigint AS total_orders
+                    COUNT(DISTINCT COALESCE(sale_batch_no, order_no))::bigint AS total_orders
                 FROM transactions
                 WHERE group_id = %s
                   AND created_at >= date_trunc(
@@ -1624,6 +2098,133 @@ def handle_message(event):
 
 
         # ------------------------------------------
+        # 超快速出庫（可單品，也可一次多品項）
+        #
+        # /大10
+        # /大*10
+        # /小20
+        # /1490*60
+        #
+        # 多行一起貼 = 同一筆出庫
+        # ------------------------------------------
+
+        quick_sale = parse_quick_sale_message(
+            raw_text
+        )
+
+        if quick_sale is not None:
+
+            if not quick_sale["ok"]:
+
+                if (
+                    quick_sale["reason"]
+                    == "quantity"
+                ):
+                    reply(
+                        event,
+                        "⚠️ 單一商品一次最多 500 張"
+                    )
+                    return
+
+                if (
+                    quick_sale["reason"]
+                    == "total_quantity"
+                ):
+                    reply(
+                        event,
+                        "⚠️ 一次快速出庫總數最多 500 張"
+                    )
+                    return
+
+                reply(
+                    event,
+                    "⚠️ 快速出庫格式看不懂\n\n"
+                    "例如：\n"
+                    "/大10\n"
+                    "/小*20\n"
+                    "/1490*60"
+                )
+                return
+
+            result = sell_multiple_items(
+                operator,
+                context_id,
+                "",
+                quick_sale["items"],
+            )
+
+            if not result["ok"]:
+
+                if (
+                    result["reason"]
+                    == "product_not_found"
+                ):
+                    reply(
+                        event,
+                        f"⚠️ 找不到商品："
+                        f"{result['product_text']}"
+                    )
+                    return
+
+                if (
+                    result["reason"]
+                    == "not_enough"
+                ):
+                    reply(
+                        event,
+                        f"⚠️ "
+                        f"{result['product']['code']} "
+                        f"庫存不足\n"
+                        f"需要：{result['requested']} 張\n"
+                        f"目前可用：{result['available']} 張\n\n"
+                        f"整筆沒有出庫。"
+                    )
+                    return
+
+                if (
+                    result["reason"]
+                    == "reply_too_long"
+                ):
+                    reply(
+                        event,
+                        "⚠️ 這次序號內容太長，"
+                        "LINE 一次無法完整回傳。\n"
+                        "整筆沒有出庫，請拆成兩次。"
+                    )
+                    return
+
+            summary_lines = [
+                "✅ 出庫完成",
+                "",
+            ]
+
+            for item in result["items"]:
+                summary_lines.append(
+                    f"{item['product']['code']} × "
+                    f"{item['quantity']}"
+                )
+
+            summary_lines.extend([
+                "",
+                f"（訂單編號{result['sale_batch_no']}）",
+            ])
+
+            messages = list(
+                result["serial_chunks"]
+            )
+
+            messages.append(
+                "\n".join(summary_lines)
+            )
+
+            reply_messages(
+                event,
+                messages,
+            )
+            return
+
+
+        # ------------------------------------------
         # 出庫 / 發序號
         #
         # 快速格式：
@@ -1897,13 +2498,34 @@ def handle_message(event):
                 result["action_type"]
                 == "sale"
             ):
+                lines = [
+                    "↩️ 已撤回上一筆出庫",
+                ]
+
+                for item in result["items"]:
+                    lines.append(
+                        f"{item['product']['code']} × "
+                        f"{item['quantity']}"
+                    )
+
+                sold_to_values = [
+                    item["sold_to"]
+                    for item in result["items"]
+                    if item["sold_to"]
+                ]
+
+                if sold_to_values:
+                    lines.append(
+                        f"原客戶：《{sold_to_values[0]}》"
+                    )
+
+                lines.append(
+                    f"（訂單編號{result['ref_no']}）"
+                )
+
                 reply(
                     event,
-                    f"↩️ 已撤回上一筆出庫\n"
-                    f"{result['order']['code']} × "
-                    f"{result['quantity']}\n"
-                    f"原客戶：《{result['order']['sold_to']}》\n"
-                    f"（訂單編號{result['ref_no']}）"
+                    "\n".join(lines)
                 )
                 return
 
@@ -2014,7 +2636,7 @@ def handle_message(event):
                 "序號2\n\n"
                 "出庫："
                 "發 小美 MyCard1000 5\n"
-                "快速出庫：/出大卡*10 或 /發大卡*10\n\n"
+                "快速出庫：/大10 或 /大*10\n""多品項：每行一個，例如 /大10、/小20\n\n"
                 "撤回群組上一筆：撤回\n\n"
                 "今日銷售：今日銷售\n"
                 "查訂單："
