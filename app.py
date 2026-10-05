@@ -591,6 +591,12 @@ def parse_quick_sale_message(raw_text):
         item = parse_quick_sale_line(line)
 
         if not item or not item.get("ok"):
+            # 單行可能是其他正式 / 指令，例如：
+            # /發 小美 大卡 10、/查庫存 大卡
+            # 交回後面的正式指令處理。
+            if len(lines) == 1:
+                return None
+
             return {
                 "ok": False,
                 "reason": "format",
@@ -1280,12 +1286,45 @@ def undo_last_action(
 
                 rows = cur.fetchall()
 
+                # 舊版曾有入庫動作已寫入 stock_actions，
+                # 但 serials.batch_no 沒有正確留下的情況。
+                # PostgreSQL 同一 transaction 的 now() 時間相同，
+                # 因此可用 operator + created_at 精準找回該批舊入庫。
+                if not rows:
+                    cur.execute(
+                        """
+                        SELECT
+                            s.id,
+                            s.serial,
+                            s.status,
+                            s.order_no,
+                            s.product_id,
+                            p.code,
+                            p.name
+                        FROM serials s
+                        JOIN products p
+                          ON p.id = s.product_id
+                        WHERE s.batch_no IS NULL
+                          AND s.operator = %s
+                          AND s.created_at = %s
+                        ORDER BY s.id
+                        FOR UPDATE OF s
+                        """,
+                        (
+                            action["operator"],
+                            action["created_at"],
+                        ),
+                    )
+
+                    rows = cur.fetchall()
+
                 if not rows:
                     conn.rollback()
 
                     return {
                         "ok": False,
                         "reason": "stock_in_rows_missing",
+                        "batch_no": action["ref_no"],
                     }
 
                 # 如果這批序號後來已經被出庫，就不能整批刪除，
@@ -1320,12 +1359,17 @@ def undo_last_action(
                     for row in rows
                 ]
 
+                serial_ids = [
+                    row["id"]
+                    for row in rows
+                ]
+
                 cur.execute(
                     """
                     DELETE FROM serials
-                    WHERE batch_no = %s
+                    WHERE id = ANY(%s)
                     """,
-                    (action["ref_no"],),
+                    (serial_ids,),
                 )
 
                 cur.execute(
@@ -1680,7 +1724,22 @@ def callback():
 )
 def handle_message(event):
 
-    raw_text = event.message.text
+    original_raw_text = event.message.text
+    original_text = original_raw_text.strip()
+
+    # 所有機器人指令都必須以 / 開頭。
+    # 一般聊天沒有 /，機器人完全不回應。
+    if not original_text.startswith("/"):
+        return
+
+    # 舊有指令處理邏輯維持不變：
+    # 只移除整則訊息「第一個指令開頭」的 /。
+    # 入庫後面的序號內容不會被修改。
+    leading_ws_len = len(original_raw_text) - len(original_raw_text.lstrip())
+    raw_text = (
+        original_raw_text[:leading_ws_len]
+        + original_raw_text[leading_ws_len + 1:]
+    )
     text = raw_text.strip()
 
     operator = get_operator(event)
@@ -1722,7 +1781,7 @@ def handle_message(event):
             if not target_id:
                 reply(
                     event,
-                    "格式：加權限 LINE_USER_ID"
+                    "格式：/加權限 LINE_USER_ID"
                 )
                 return
 
@@ -1760,7 +1819,7 @@ def handle_message(event):
             if not target_id:
                 reply(
                     event,
-                    "格式：刪權限 LINE_USER_ID"
+                    "格式：/刪權限 LINE_USER_ID"
                 )
                 return
 
@@ -1845,7 +1904,7 @@ def handle_message(event):
             reply(
                 event,
                 "⛔ 你沒有操作權限\n"
-                "如需開通，請輸入「我的ID」"
+                "如需開通，請輸入「/我的ID」"
             )
             return
 
@@ -1863,8 +1922,8 @@ def handle_message(event):
 
         # ------------------------------------------
         # 記帳
-        # 小美 +1900
-        # 小美 -1900
+        # /小美 +1900
+        # /小美 -1900
         # ------------------------------------------
 
         parts = text.split()
@@ -2023,7 +2082,7 @@ def handle_message(event):
         # ------------------------------------------
         # 入庫
         #
-        # 入庫 test100
+        # /入庫 test100
         # Abc001xY
         # TEST-002
         # 120 556 AA
@@ -2056,11 +2115,11 @@ def handle_message(event):
                 reply(
                     event,
                     "格式：\n"
-                    "入庫 商品\n"
+                    "/入庫 商品\n"
                     "序號1\n"
                     "序號2\n\n"
                     "例如：\n"
-                    "入庫 test100\n"
+                    "/入庫 test100\n"
                     "ABC001\n"
                     "120 556 AA"
                 )
@@ -2109,7 +2168,7 @@ def handle_message(event):
         # ------------------------------------------
 
         quick_sale = parse_quick_sale_message(
-            raw_text
+            original_raw_text
         )
 
         if quick_sale is not None:
@@ -2232,7 +2291,7 @@ def handle_message(event):
         # /發大卡*10
         #
         # 也保留原本格式：
-        # 發 小美 大卡 10
+        # /發 小美 大卡 10
         # 發 大卡*10
         # ------------------------------------------
 
@@ -2300,7 +2359,7 @@ def handle_message(event):
             # ------------------------------
             # 原本格式：
             # 發 大卡*10
-            # 發 小美 大卡 10
+            # /發 小美 大卡 10
             # ------------------------------
             else:
 
@@ -2321,7 +2380,7 @@ def handle_message(event):
                         reply(
                             event,
                             "⚠️ 數量必須是數字\n"
-                            "例如：發 大卡*10"
+                            "例如：/發 大卡*10"
                         )
                         return
 
@@ -2329,11 +2388,11 @@ def handle_message(event):
                         reply(
                             event,
                             "⚠️ 請輸入商品\n"
-                            "例如：發 大卡*10"
+                            "例如：/發 大卡*10"
                         )
                         return
 
-                # 發 小美 大卡 10
+                # /發 小美 大卡 10
                 else:
 
                     parts = body.split()
@@ -2342,8 +2401,8 @@ def handle_message(event):
                         reply(
                             event,
                             "格式：\n"
-                            "發 客戶 商品 數量\n"
-                            "例如：發 小美 大卡 10\n\n"
+                            "/發 客戶 商品 數量\n"
+                            "例如：/發 小美 大卡 10\n\n"
                             "快速格式：\n"
                             "/出大卡*10\n"
                             "/發大卡*10"
@@ -2460,6 +2519,18 @@ def handle_message(event):
                     reply(
                         event,
                         "⚠️ 這個群組目前沒有可撤回的上一筆動作"
+                    )
+                    return
+
+                if (
+                    result["reason"]
+                    == "stock_in_rows_missing"
+                ):
+                    reply(
+                        event,
+                        "⚠️ 找不到這次入庫的序號資料，"
+                        "所以系統沒有刪除任何庫存。\n"
+                        "請把這個畫面截圖給管理員。"
                     )
                     return
 
@@ -2623,32 +2694,31 @@ def handle_message(event):
 
             command_text = (
                 "📋 可用指令\n\n"
-                "查自己的ID：我的ID\n\n"
-                "記帳：小美 +1900\n"
-                "收款：小美 -1900\n"
-                "查帳：查帳 小美\n\n"
-                "全部庫存：庫存\n"
-                "單品庫存："
-                "查庫存 MyCard1000\n\n"
+                "查自己的ID：/我的ID\n"
+                "測試：/測試\n\n"
+                "記帳：/小美 +1900\n"
+                "收款：/小美 -1900\n"
+                "查帳：/查帳 小美\n\n"
+                "全部庫存：/庫存\n"
+                "單品庫存：/查庫存 MyCard1000\n\n"
                 "入庫：\n"
-                "入庫 MyCard1000\n"
+                "/入庫 MyCard1000\n"
                 "序號1\n"
                 "序號2\n\n"
-                "出庫："
-                "發 小美 MyCard1000 5\n"
-                "快速出庫：/大10 或 /大*10\n""多品項：每行一個，例如 /大10、/小20\n\n"
-                "撤回群組上一筆：撤回\n\n"
-                "今日銷售：今日銷售\n"
-                "查訂單："
-                "查單 TXxxxxxxxx"
+                "完整出庫：/發 小美 MyCard1000 5\n"
+                "快速出庫：/大10 或 /大*10\n"
+                "多品項：每行一個，例如 /大10、/小20\n\n"
+                "撤回群組上一筆：/撤回\n"
+                "今日銷售：/今日銷售\n"
+                "查訂單：/查單 TXxxxxxxxx"
             )
 
             if is_admin(operator):
                 command_text += (
                     "\n\n👑 管理員指令\n"
-                    "加權限 Uxxxxxxxx\n"
-                    "刪權限 Uxxxxxxxx\n"
-                    "權限名單"
+                    "/加權限 Uxxxxxxxx\n"
+                    "/刪權限 Uxxxxxxxx\n"
+                    "/權限名單"
                 )
 
             reply(
@@ -2661,7 +2731,7 @@ def handle_message(event):
         reply(
             event,
             "看不懂這個指令 😆\n"
-            "輸入「指令」查看使用方式"
+            "輸入「/指令」查看使用方式"
         )
 
     except Exception as e:
