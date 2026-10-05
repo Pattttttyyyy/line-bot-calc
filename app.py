@@ -649,6 +649,138 @@ def parse_quick_sale_message(raw_text):
     }
 
 
+def format_labeled_pairs(raw_text):
+    """
+    /整理
+    將：
+    序號1: AAA
+    密碼1: BBB
+    序號2: CCC
+    密碼2: DDD
+
+    變成：
+    AAA    BBB
+    CCC    DDD
+    """
+    lines = [
+        line.strip()
+        for line in raw_text.splitlines()
+        if line.strip()
+    ]
+
+    if lines and lines[0].lstrip().startswith("/整理"):
+        lines = lines[1:]
+
+    serials = {}
+    passwords = {}
+
+    serial_re = re.compile(
+        r"^序號\s*(\d+)\s*[:：]\s*(.+?)\s*$",
+        re.IGNORECASE,
+    )
+    password_re = re.compile(
+        r"^密碼\s*(\d+)\s*[:：]\s*(.+?)\s*$",
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+        m = serial_re.match(line)
+        if m:
+            serials[int(m.group(1))] = m.group(2).strip()
+            continue
+
+        m = password_re.match(line)
+        if m:
+            passwords[int(m.group(1))] = m.group(2).strip()
+            continue
+
+    numbers = sorted(set(serials) | set(passwords))
+
+    if not numbers:
+        return {"ok": False, "reason": "no_pairs"}
+
+    missing = [
+        n for n in numbers
+        if n not in serials or n not in passwords
+    ]
+
+    if missing:
+        return {
+            "ok": False,
+            "reason": "missing_pair",
+            "numbers": missing,
+        }
+
+    rows = [
+        f"{serials[n]}    {passwords[n]}"
+        for n in numbers
+    ]
+
+    return {
+        "ok": True,
+        "text": "\n".join(rows),
+        "count": len(rows),
+    }
+
+
+def add_comma_between_columns(raw_text):
+    """
+    /逗
+    將：
+    AAA    BBB
+    CCC<TAB>DDD
+
+    變成：
+    AAA,BBB
+    CCC,DDD
+    """
+    lines = [
+        line.strip()
+        for line in raw_text.splitlines()
+        if line.strip()
+    ]
+
+    if lines and lines[0].lstrip().startswith("/逗"):
+        lines = lines[1:]
+
+    rows = []
+
+    for line in lines:
+        # 以任意連續空白（空格或 Tab）切成兩欄
+        parts = re.split(r"\s+", line.strip(), maxsplit=1)
+
+        if len(parts) != 2:
+            return {
+                "ok": False,
+                "reason": "bad_line",
+                "line": line,
+            }
+
+        left, right = parts[0].strip(), parts[1].strip()
+
+        if not left or not right:
+            return {
+                "ok": False,
+                "reason": "bad_line",
+                "line": line,
+            }
+
+        rows.append(f"{left},{right}")
+
+    if not rows:
+        return {
+            "ok": False,
+            "reason": "no_pairs",
+        }
+
+    return {
+        "ok": True,
+        "text": "\n".join(rows),
+        "count": len(rows),
+    }
+
+
+
 def split_text_chunks(text, max_len=4300):
     """
     LINE 單則文字訊息上限約 5000 字元。
@@ -2157,6 +2289,77 @@ def handle_message(event):
 
 
         # ------------------------------------------
+        # /整理：把「序號1 / 密碼1」整理成同一行
+        # /逗：把兩欄空白改成逗號
+        # ------------------------------------------
+
+        if text == "整理" or text.startswith("整理\n"):
+
+            result = format_labeled_pairs(
+                original_raw_text
+            )
+
+            if not result["ok"]:
+
+                if result["reason"] == "missing_pair":
+                    nums = "、".join(
+                        str(n)
+                        for n in result["numbers"]
+                    )
+                    reply(
+                        event,
+                        f"⚠️ 第 {nums} 組的序號或密碼不完整"
+                    )
+                    return
+
+                reply(
+                    event,
+                    "⚠️ 沒有找到可整理的序號/密碼\n\n"
+                    "格式例如：\n"
+                    "/整理\n"
+                    "序號1: MFXMTA003786\n"
+                    "密碼1: LFC6M8G3DF8G"
+                )
+                return
+
+            reply_messages(
+                event,
+                split_text_chunks(result["text"])
+            )
+            return
+
+        if text == "逗" or text.startswith("逗\n"):
+
+            result = add_comma_between_columns(
+                original_raw_text
+            )
+
+            if not result["ok"]:
+
+                bad_line = result.get("line", "")
+
+                reply(
+                    event,
+                    "⚠️ /逗 需要每行有兩欄資料\n\n"
+                    "例如：\n"
+                    "/逗\n"
+                    "MFXMTA003797    GP3TX8F8QTUV"
+                    + (
+                        f"\n\n看不懂這行：{bad_line}"
+                        if bad_line
+                        else ""
+                    )
+                )
+                return
+
+            reply_messages(
+                event,
+                split_text_chunks(result["text"])
+            )
+            return
+
+
+        # ------------------------------------------
         # 超快速出庫（可單品，也可一次多品項）
         #
         # /大10
@@ -2710,7 +2913,9 @@ def handle_message(event):
                 "多品項：每行一個，例如 /大10、/小20\n\n"
                 "撤回群組上一筆：/撤回\n"
                 "今日銷售：/今日銷售\n"
-                "查訂單：/查單 TXxxxxxxxx"
+                "查訂單：/查單 TXxxxxxxxx\n"
+                "整理序號密碼：/整理\n"
+                "空白改逗號：/逗"
             )
 
             if is_admin(operator):
