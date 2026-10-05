@@ -653,55 +653,64 @@ def parse_quick_sale_message(raw_text):
 def format_labeled_pairs(raw_text):
     """
     /整理
-    將：
+
+    可一次整理大量資料，不限制 5 組。
+    支援：
     序號1: AAA
     密碼1: BBB
-    序號2: CCC
-    密碼2: DDD
+    ...
+    序號100: XXX
+    密碼100: YYY
 
-    變成：
+    輸出：
     AAA    BBB
-    CCC    DDD
+    ...
     """
-    lines = [
-        line.strip()
-        for line in raw_text.splitlines()
-        if line.strip()
-    ]
+    body = raw_text.strip()
 
-    if lines and lines[0].lstrip().startswith("/整理"):
-        lines = lines[1:]
+    if body.startswith("/整理"):
+        body = body[len("/整理"):].lstrip("\r\n ")
 
-    serials = {}
-    passwords = {}
-
-    serial_re = re.compile(
-        r"^序號\s*(\d+)\s*[:：]\s*(.+?)\s*$",
-        re.IGNORECASE,
-    )
-    password_re = re.compile(
-        r"^密碼\s*(\d+)\s*[:：]\s*(.+?)\s*$",
-        re.IGNORECASE,
+    serial_matches = re.findall(
+        r"序號\s*([0-9０-９]+)\s*[:：]\s*([^\r\n]+)",
+        body,
+        flags=re.IGNORECASE,
     )
 
-    for line in lines:
-        m = serial_re.match(line)
-        if m:
-            serials[int(m.group(1))] = m.group(2).strip()
-            continue
+    password_matches = re.findall(
+        r"密碼\s*([0-9０-９]+)\s*[:：]\s*([^\r\n]+)",
+        body,
+        flags=re.IGNORECASE,
+    )
 
-        m = password_re.match(line)
-        if m:
-            passwords[int(m.group(1))] = m.group(2).strip()
-            continue
+    def normalize_number(value):
+        table = str.maketrans(
+            "０１２３４５６７８９",
+            "0123456789",
+        )
+        return int(value.translate(table))
+
+    serials = {
+        normalize_number(number): value.strip()
+        for number, value in serial_matches
+    }
+
+    passwords = {
+        normalize_number(number): value.strip()
+        for number, value in password_matches
+    }
 
     numbers = sorted(set(serials) | set(passwords))
 
     if not numbers:
-        return {"ok": False, "reason": "no_pairs"}
+        return {
+            "ok": False,
+            "reason": "no_pairs",
+        }
 
     missing = [
-        n for n in numbers
+        n
+        for n in numbers
         if n not in serials or n not in passwords
     ]
 
@@ -722,6 +731,7 @@ def format_labeled_pairs(raw_text):
         "text": "\n".join(rows),
         "count": len(rows),
     }
+
 
 
 def add_comma_between_columns(raw_text):
@@ -2971,5 +2981,3 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
     )
-
-
