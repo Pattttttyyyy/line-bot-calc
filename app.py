@@ -654,77 +654,75 @@ def format_labeled_pairs(raw_text):
     """
     /整理
 
-    可一次整理大量資料，不限制 5 組。
-    支援：
-    序號1: AAA
-    密碼1: BBB
-    ...
-    序號100: XXX
-    密碼100: YYY
-
-    輸出：
-    AAA    BBB
-    ...
+    不看編號上限，直接依照出現順序，
+    把每一組「序號 + 密碼」配成同一行。
     """
     body = raw_text.strip()
 
     if body.startswith("/整理"):
         body = body[len("/整理"):].lstrip("\r\n ")
 
-    serial_matches = re.findall(
-        r"序號\s*([0-9０-９]+)\s*[:：]\s*([^\r\n]+)",
-        body,
-        flags=re.IGNORECASE,
+    # 抓出每一筆標籤資料，不限制編號位數與組數
+    pattern = re.compile(
+        r"(序號|密碼)\s*[0-9０-９]*\s*[:：]\s*([^\r\n]+)",
+        re.IGNORECASE,
     )
 
-    password_matches = re.findall(
-        r"密碼\s*([0-9０-９]+)\s*[:：]\s*([^\r\n]+)",
-        body,
-        flags=re.IGNORECASE,
-    )
+    tokens = []
+    for match in pattern.finditer(body):
+        label = match.group(1)
+        value = match.group(2).strip()
 
-    def normalize_number(value):
-        table = str.maketrans(
-            "０１２３４５６７８９",
-            "0123456789",
-        )
-        return int(value.translate(table))
+        if value:
+            tokens.append((label, value))
 
-    serials = {
-        normalize_number(number): value.strip()
-        for number, value in serial_matches
-    }
-
-    passwords = {
-        normalize_number(number): value.strip()
-        for number, value in password_matches
-    }
-
-    numbers = sorted(set(serials) | set(passwords))
-
-    if not numbers:
+    if not tokens:
         return {
             "ok": False,
             "reason": "no_pairs",
         }
 
-    missing = [
-        n
-        for n in numbers
-        if n not in serials or n not in passwords
-    ]
+    rows = []
+    pending_serial = None
 
-    if missing:
+    for label, value in tokens:
+        if label == "序號":
+            # 如果前一個序號還沒等到密碼，就視為不完整
+            if pending_serial is not None:
+                return {
+                    "ok": False,
+                    "reason": "missing_pair",
+                    "numbers": ["前一組"],
+                }
+
+            pending_serial = value
+            continue
+
+        # label == 密碼
+        if pending_serial is None:
+            return {
+                "ok": False,
+                "reason": "missing_pair",
+                "numbers": ["前一組"],
+            }
+
+        rows.append(
+            f"{pending_serial}    {value}"
+        )
+        pending_serial = None
+
+    if pending_serial is not None:
         return {
             "ok": False,
             "reason": "missing_pair",
-            "numbers": missing,
+            "numbers": ["最後一組"],
         }
 
-    rows = [
-        f"{serials[n]}    {passwords[n]}"
-        for n in numbers
-    ]
+    if not rows:
+        return {
+            "ok": False,
+            "reason": "no_pairs",
+        }
 
     return {
         "ok": True,
@@ -2317,9 +2315,15 @@ def handle_message(event):
                         str(n)
                         for n in result["numbers"]
                     )
+
+                    if nums in ("前一組", "最後一組"):
+                        msg = f"⚠️ {nums}的序號或密碼不完整"
+                    else:
+                        msg = f"⚠️ 第 {nums} 組的序號或密碼不完整"
+
                     reply(
                         event,
-                        f"⚠️ 第 {nums} 組的序號或密碼不完整"
+                        msg
                     )
                     return
 
