@@ -70,6 +70,18 @@ account_sheet = spreadsheet.worksheet(
     "帳務表"
 )
 
+SALES_SHEET_NAME = "銷售紀錄"
+
+
+def get_sales_sheet():
+    """
+    銷售紀錄採懶載入。
+    即使 Google Sheet 暫時有問題，也不要讓整台 LINE Bot 啟動失敗。
+    """
+    return spreadsheet.worksheet(
+        SALES_SHEET_NAME
+    )
+
 
 # ==================================================
 # Supabase PostgreSQL
@@ -404,6 +416,214 @@ def get_customer_balance(customer):
                 pass
 
     return balance
+
+
+
+# ==================================================
+# Google Sheet：銷售紀錄
+#
+# 欄位：
+# 日期、客戶、數量（或折扣）、單價、售價金額、成本、利潤、
+# 商品（或服務）、訂單編號、同步狀態、最後同步時間
+# ==================================================
+
+def sales_date_tw():
+    return datetime.now(
+        ZoneInfo("Asia/Taipei")
+    ).strftime("%Y/%m/%d")
+
+
+def append_sales_rows(
+    customer,
+    items,
+):
+    """
+    出庫完成後，把每個商品各寫一列到「銷售紀錄」。
+
+    items 每筆需要：
+    - product.code
+    - quantity
+    - order_no
+
+    目前：
+    - 客戶有就帶入，沒有可空白
+    - 單價 / 售價金額 / 成本 / 利潤先空白
+    - 同步狀態固定「待補」
+    - 最後同步時間先空白
+
+    Google Sheet 寫入失敗不回滾已成功的正式出庫，
+    只回傳 False，避免 Sheet 暫時故障造成庫存交易失敗。
+    """
+    try:
+        sales_sheet = get_sales_sheet()
+
+        rows = []
+
+        for item in items:
+            rows.append([
+                sales_date_tw(),
+                customer or "",
+                item["quantity"],
+                "",
+                "",
+                "",
+                "",
+                item["product"]["code"],
+                item["order_no"],
+                "待補",
+                "",
+            ])
+
+        if rows:
+            sales_sheet.append_rows(
+                rows,
+                value_input_option="USER_ENTERED",
+            )
+
+        return True
+
+    except Exception as e:
+        print(
+            "SALES SHEET APPEND ERROR:",
+            repr(e),
+        )
+        return False
+
+
+def mark_sales_rows_undone(order_nos):
+    """
+    撤回出庫後，不刪除 Google Sheet 歷史紀錄，
+    而是把對應訂單的「同步狀態」標記為「已撤回」。
+    """
+    if not order_nos:
+        return True
+
+    try:
+        sales_sheet = get_sales_sheet()
+        values = sales_sheet.get_all_values()
+
+        if not values:
+            return True
+
+        headers = [
+            str(value).strip()
+            for value in values[0]
+        ]
+
+        required = {
+            "訂單編號",
+            "同步狀態",
+            "最後同步時間",
+        }
+
+        if not required.issubset(
+            set(headers)
+        ):
+            print(
+                "SALES SHEET UNDO ERROR: "
+                "缺少必要欄位"
+            )
+            return False
+
+        order_col = headers.index(
+            "訂單編號"
+        )
+        status_col = headers.index(
+            "同步狀態"
+        )
+        synced_col = headers.index(
+            "最後同步時間"
+        )
+
+        target_order_nos = {
+            str(value).strip()
+            for value in order_nos
+        }
+
+        updates = []
+        sync_time = now_tw()
+
+        for sheet_row, row in enumerate(
+            values[1:],
+            start=2,
+        ):
+            order_value = (
+                str(row[order_col]).strip()
+                if order_col < len(row)
+                else ""
+            )
+
+            if order_value not in target_order_nos:
+                continue
+
+            # 一次更新「同步狀態」與「最後同步時間」兩欄。
+            start_col = status_col + 1
+            end_col = synced_col + 1
+
+            # 目前兩欄在使用者指定表格中是相鄰的 J、K。
+            # 若未來欄位移動，仍以實際標題位置計算。
+            if end_col == start_col + 1:
+                from gspread.utils import rowcol_to_a1
+
+                start_a1 = rowcol_to_a1(
+                    sheet_row,
+                    start_col,
+                )
+                end_a1 = rowcol_to_a1(
+                    sheet_row,
+                    end_col,
+                )
+
+                updates.append({
+                    "range": (
+                        f"{start_a1}:{end_a1}"
+                    ),
+                    "values": [[
+                        "已撤回",
+                        sync_time,
+                    ]],
+                })
+            else:
+                from gspread.utils import rowcol_to_a1
+
+                status_a1 = rowcol_to_a1(
+                    sheet_row,
+                    start_col,
+                )
+                synced_a1 = rowcol_to_a1(
+                    sheet_row,
+                    end_col,
+                )
+
+                updates.extend([
+                    {
+                        "range": status_a1,
+                        "values": [[
+                            "已撤回"
+                        ]],
+                    },
+                    {
+                        "range": synced_a1,
+                        "values": [[
+                            sync_time
+                        ]],
+                    },
+                ])
+
+        if updates:
+            sales_sheet.batch_update(
+                updates,
+                value_input_option="USER_ENTERED",
+            )
+
+        return True
+
+    except Exception as e:
+        print(
+            "SALES SHEET UNDO ERROR:",
+            repr(e),
+        )
+        return False
 
 
 # ==================================================
@@ -2470,6 +2690,11 @@ def handle_message(event):
                     )
                     return
 
+            sheet_sync_ok = append_sales_rows(
+                "",
+                result["items"],
+            )
+
             summary_lines = [
                 "✅ 出庫完成",
                 "",
@@ -2485,6 +2710,12 @@ def handle_message(event):
                 "",
                 f"（訂單編號{result['sale_batch_no']}）",
             ])
+
+            if not sheet_sync_ok:
+                summary_lines.extend([
+                    "",
+                    "⚠️ 銷售紀錄暫時未寫入 Google Sheet",
+                ])
 
             messages = list(
                 result["serial_chunks"]
@@ -2686,6 +2917,17 @@ def handle_message(event):
                     )
                     return
 
+            sheet_sync_ok = append_sales_rows(
+                customer,
+                [
+                    {
+                        "product": result["product"],
+                        "quantity": quantity,
+                        "order_no": result["order_no"],
+                    }
+                ],
+            )
+
             serial_text = "\n".join(
                 result["serials"]
             )
@@ -2708,6 +2950,11 @@ def handle_message(event):
                         f"✅ 已出庫\n"
                         f"{summary_line}\n"
                         f"（訂單編號{result['order_no']}）"
+                        + (
+                            "\n⚠️ 銷售紀錄暫時未寫入 Google Sheet"
+                            if not sheet_sync_ok
+                            else ""
+                        )
                     ),
                 ],
             )
@@ -2787,6 +3034,13 @@ def handle_message(event):
                 result["action_type"]
                 == "sale"
             ):
+                sheet_undo_ok = mark_sales_rows_undone(
+                    [
+                        item["order_no"]
+                        for item in result["items"]
+                    ]
+                )
+
                 lines = [
                     "↩️ 已撤回上一筆出庫",
                 ]
@@ -2811,6 +3065,11 @@ def handle_message(event):
                 lines.append(
                     f"（訂單編號{result['ref_no']}）"
                 )
+
+                if not sheet_undo_ok:
+                    lines.append(
+                        "⚠️ Google Sheet 尚未標記撤回"
+                    )
 
                 reply(
                     event,
