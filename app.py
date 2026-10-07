@@ -2772,6 +2772,84 @@ def format_query_date(value):
     return value.strftime("%Y/%m/%d")
 
 
+def parse_date_range_command(text, command_names):
+    """
+    æ¯æ´ï¼
+    /æ¥é·è²¨ 10/1 10/7
+    /æ¥é·è²¨ 10/1~10/7
+    /æ¥é·è²¨ 10/1ï½10/7
+    /æ¥é·è²¨ 10/1 å° 10/7
+    /æ¥é·è²¨ 10/7       -> æ¥å®æ¥
+
+    command_names å³å¥å»æ / ä¹å¾çæä»¤åç¨±ã
+    """
+    matched_name = None
+
+    for name in command_names:
+        if text == name or text.startswith(name + " "):
+            matched_name = name
+            break
+
+    if matched_name is None:
+        return None
+
+    body = text[len(matched_name):].strip()
+
+    if not body:
+        return {
+            "ok": False,
+            "reason": "missing_date",
+        }
+
+    normalized = (
+        body
+        .replace("ï½", "~")
+        .replace("ï¼", "-")
+        .replace(" å° ", "~")
+        .replace("è³", "~")
+    )
+
+    # åèçãæ¥æ~æ¥æã
+    if "~" in normalized:
+        parts = [
+            p.strip()
+            for p in normalized.split("~", 1)
+        ]
+    else:
+        parts = normalized.split()
+
+        # å®ä¸æ¥æ = æ¥ç¶å¤©
+        if len(parts) == 1:
+            parts = [parts[0], parts[0]]
+
+    if len(parts) != 2:
+        return {
+            "ok": False,
+            "reason": "format",
+        }
+
+    try:
+        start_date = parse_query_date(parts[0])
+        end_date = parse_query_date(parts[1])
+    except ValueError:
+        return {
+            "ok": False,
+            "reason": "date",
+        }
+
+    if start_date > end_date:
+        return {
+            "ok": False,
+            "reason": "reverse",
+        }
+
+    return {
+        "ok": True,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+
+
 
 # ==================================================
 # Supabaseï¼ä»æ¥é·å®
@@ -4177,37 +4255,48 @@ def handle_message(event):
 
         # ------------------------------------------
         # æ¥æ¥æåéé·è²¨
+        #
+        # æ¯æ´ï¼
+        # /æ¥é·è²¨ 10/1 10/7
+        # /æ¥åéé·è²¨ 10/1~10/7
+        # /åéé·è²¨ 10/7
+        # /é·è²¨ 10/1 10/7
         # ------------------------------------------
 
-        if text.startswith("æ¥é·è²¨ "):
+        sales_range = parse_date_range_command(
+            text,
+            (
+                "æ¥é·è²¨",
+                "æ¥åéé·è²¨",
+                "åéé·è²¨",
+                "é·è²¨",
+            ),
+        )
 
-            parts = text.split()
+        if sales_range is not None:
 
-            if len(parts) != 3:
+            if not sales_range["ok"]:
+
+                if sales_range["reason"] == "reverse":
+                    reply(
+                        event,
+                        "â ï¸ éå§æ¥æä¸è½ææ¼çµææ¥æ"
+                    )
+                    return
+
                 reply(
                     event,
-                    "æ ¼å¼ï¼/æ¥é·è²¨ éå§æ¥æ çµææ¥æ\n"
-                    "ä¾å¦ï¼/æ¥é·è²¨ 2026/10/1 2026/10/7"
+                    "â ï¸ æ¥ææ ¼å¼çä¸æ\n\n"
+                    "å¯ä»¥éæ¨£è¼¸å¥ï¼\n"
+                    "/æ¥é·è²¨ 10/1 10/7\n"
+                    "/æ¥é·è²¨ 10/1~10/7\n"
+                    "/æ¥åéé·è²¨ 10/1 10/7\n"
+                    "/æ¥é·è²¨ 10/7"
                 )
                 return
 
-            try:
-                start_date = parse_query_date(parts[1])
-                end_date = parse_query_date(parts[2])
-            except ValueError:
-                reply(
-                    event,
-                    "â ï¸ æ¥ææ ¼å¼é¯èª¤\n"
-                    "ä¾å¦ï¼/æ¥é·è²¨ 2026/10/1 2026/10/7"
-                )
-                return
-
-            if start_date > end_date:
-                reply(
-                    event,
-                    "â ï¸ éå§æ¥æä¸è½ææ¼çµææ¥æ"
-                )
-                return
+            start_date = sales_range["start_date"]
+            end_date = sales_range["end_date"]
 
             result = get_sales_by_date_range(
                 context_id,
@@ -4251,37 +4340,48 @@ def handle_message(event):
 
         # ------------------------------------------
         # æ¥æ¥æåéé²è²¨
+        #
+        # æ¯æ´ï¼
+        # /æ¥é²è²¨ 10/1 10/7
+        # /æ¥åéé²è²¨ 10/1~10/7
+        # /åéé²è²¨ 10/7
+        # /é²è²¨ 10/1 10/7
         # ------------------------------------------
 
-        if text.startswith("æ¥é²è²¨ "):
+        stock_range = parse_date_range_command(
+            text,
+            (
+                "æ¥é²è²¨",
+                "æ¥åéé²è²¨",
+                "åéé²è²¨",
+                "é²è²¨",
+            ),
+        )
 
-            parts = text.split()
+        if stock_range is not None:
 
-            if len(parts) != 3:
+            if not stock_range["ok"]:
+
+                if stock_range["reason"] == "reverse":
+                    reply(
+                        event,
+                        "â ï¸ éå§æ¥æä¸è½ææ¼çµææ¥æ"
+                    )
+                    return
+
                 reply(
                     event,
-                    "æ ¼å¼ï¼/æ¥é²è²¨ éå§æ¥æ çµææ¥æ\n"
-                    "ä¾å¦ï¼/æ¥é²è²¨ 2026/10/1 2026/10/7"
+                    "â ï¸ æ¥ææ ¼å¼çä¸æ\n\n"
+                    "å¯ä»¥éæ¨£è¼¸å¥ï¼\n"
+                    "/æ¥é²è²¨ 10/1 10/7\n"
+                    "/æ¥é²è²¨ 10/1~10/7\n"
+                    "/æ¥åéé²è²¨ 10/1 10/7\n"
+                    "/æ¥é²è²¨ 10/7"
                 )
                 return
 
-            try:
-                start_date = parse_query_date(parts[1])
-                end_date = parse_query_date(parts[2])
-            except ValueError:
-                reply(
-                    event,
-                    "â ï¸ æ¥ææ ¼å¼é¯èª¤\n"
-                    "ä¾å¦ï¼/æ¥é²è²¨ 2026/10/1 2026/10/7"
-                )
-                return
-
-            if start_date > end_date:
-                reply(
-                    event,
-                    "â ï¸ éå§æ¥æä¸è½ææ¼çµææ¥æ"
-                )
-                return
+            start_date = stock_range["start_date"]
+            end_date = stock_range["end_date"]
 
             result = get_stock_in_by_date_range(
                 context_id,
@@ -4437,7 +4537,9 @@ def handle_message(event):
                 "æå®è£å®ï¼/è£å® TXxxxxxxxx å®¢æ¶å\n"
                 "åæ­¥è£å®ï¼/åæ­¥è£å®\n"
                 "æ¥æé·è²¨ï¼/æ¥é·è²¨ 10/1 10/7\n"
+                "ï¼ä¹å¯ /æ¥åéé·è²¨ï¼\n"
                 "æ¥æé²è²¨ï¼/æ¥é²è²¨ 10/1 10/7\n"
+                "ï¼ä¹å¯ /æ¥åéé²è²¨ï¼\n"
                 "æ´çåºèå¯ç¢¼ï¼/æ´ç\n"
                 "ç©ºç½æ¹éèï¼/é"
             )
