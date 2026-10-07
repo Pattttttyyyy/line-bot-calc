@@ -2598,7 +2598,7 @@ def get_sales_by_date_range(
     end_date,
 ):
     """
-    查目前群組/聊天室指定日期區間的銷貨。
+    查指定日期區間的全部銷貨。
     起訖日都包含。
     """
     conn = get_db()
@@ -2622,8 +2622,7 @@ def get_sales_by_date_range(
                 FROM transactions t
                 JOIN products p
                   ON p.id = t.product_id
-                WHERE t.group_id = %s
-                  AND t.created_at >= %s::date
+                WHERE t.created_at >= %s::date
                   AND t.created_at < (
                         %s::date + interval '1 day'
                       )
@@ -2633,7 +2632,6 @@ def get_sales_by_date_range(
                     LOWER(p.code)
                 """,
                 (
-                    context_id,
                     start_date,
                     end_date,
                 ),
@@ -2655,14 +2653,12 @@ def get_sales_by_date_range(
                         )
                     )::bigint AS total_orders
                 FROM transactions
-                WHERE group_id = %s
-                  AND created_at >= %s::date
+                WHERE created_at >= %s::date
                   AND created_at < (
                         %s::date + interval '1 day'
                       )
                 """,
                 (
-                    context_id,
                     start_date,
                     end_date,
                 ),
@@ -2686,9 +2682,12 @@ def get_stock_in_by_date_range(
     end_date,
 ):
     """
-    查目前群組/聊天室指定日期區間的進貨。
-    以 stock_actions 的入庫動作 + serials.batch_no 計算，
-    已撤回的入庫不計。
+    查指定日期區間的進貨。
+
+    改用 serials.created_at 計算：
+    - 舊版沒有 group_id / stock_actions 的入庫也查得到
+    - 序號後來已出庫仍算當時有進貨
+    - 已撤回入庫會刪除 serials，因此不會被計入
     """
     conn = get_db()
 
@@ -2703,18 +2702,20 @@ def get_stock_in_by_date_range(
                     p.code,
                     COUNT(s.id)::bigint AS quantity,
                     COUNT(
-                        DISTINCT a.ref_no
+                        DISTINCT COALESCE(
+                            s.batch_no,
+                            'OLD-' || s.product_id::text
+                            || '-' || to_char(
+                                s.created_at,
+                                'YYYYMMDDHH24MISSUS'
+                            )
+                        )
                     )::bigint AS batches
-                FROM stock_actions a
-                JOIN serials s
-                  ON s.batch_no = a.ref_no
+                FROM serials s
                 JOIN products p
                   ON p.id = s.product_id
-                WHERE a.group_id = %s
-                  AND a.action_type = 'stock_in'
-                  AND a.undone = FALSE
-                  AND a.created_at >= %s::date
-                  AND a.created_at < (
+                WHERE s.created_at >= %s::date
+                  AND s.created_at < (
                         %s::date + interval '1 day'
                       )
                 GROUP BY p.id, p.code
@@ -2723,7 +2724,6 @@ def get_stock_in_by_date_range(
                     LOWER(p.code)
                 """,
                 (
-                    context_id,
                     start_date,
                     end_date,
                 ),
@@ -2736,21 +2736,22 @@ def get_stock_in_by_date_range(
                 SELECT
                     COUNT(s.id)::bigint AS total_quantity,
                     COUNT(
-                        DISTINCT a.ref_no
+                        DISTINCT COALESCE(
+                            s.batch_no,
+                            'OLD-' || s.product_id::text
+                            || '-' || to_char(
+                                s.created_at,
+                                'YYYYMMDDHH24MISSUS'
+                            )
+                        )
                     )::bigint AS total_batches
-                FROM stock_actions a
-                JOIN serials s
-                  ON s.batch_no = a.ref_no
-                WHERE a.group_id = %s
-                  AND a.action_type = 'stock_in'
-                  AND a.undone = FALSE
-                  AND a.created_at >= %s::date
-                  AND a.created_at < (
+                FROM serials s
+                WHERE s.created_at >= %s::date
+                  AND s.created_at < (
                         %s::date + interval '1 day'
                       )
                 """,
                 (
-                    context_id,
                     start_date,
                     end_date,
                 ),
