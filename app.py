@@ -628,6 +628,278 @@ def mark_sales_rows_undone(order_nos):
 
 
 # ==================================================
+# è£å®ï¼è£ä¸æ¢æè¨å®çå®¢æ¶
+# ==================================================
+
+def get_sale_batch_by_ref(conn, order_or_batch_no):
+    """
+    å¯æ¥åå®å order_noãå¤åé  sale_batch_noï¼
+    æå¤åé å¶ä¸­ä¸å child order_noã
+    """
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                COALESCE(sale_batch_no, order_no) AS batch_no
+            FROM transactions
+            WHERE LOWER(order_no) = LOWER(%s)
+               OR LOWER(COALESCE(sale_batch_no, order_no)) = LOWER(%s)
+            ORDER BY id
+            LIMIT 1
+            """,
+            (order_or_batch_no, order_or_batch_no),
+        )
+        row = cur.fetchone()
+
+        if not row:
+            return None, []
+
+        batch_no = row["batch_no"]
+
+        cur.execute(
+            """
+            SELECT
+                t.id,
+                t.order_no,
+                t.sale_batch_no,
+                t.sold_to,
+                t.quantity,
+                t.product_id,
+                t.group_id,
+                p.code,
+                p.name
+            FROM transactions t
+            JOIN products p
+              ON p.id = t.product_id
+            WHERE LOWER(COALESCE(t.sale_batch_no, t.order_no)) = LOWER(%s)
+            ORDER BY t.id
+            """,
+            (batch_no,),
+        )
+
+        return batch_no, cur.fetchall()
+
+
+def find_latest_blank_sale_batch(conn, context_id):
+    """
+    æ¾ç®åç¾¤çµæè¿ä¸ç­ãæ´æ¹å®¢æ¶çç©ºç½ãçåºåº«ã
+    """
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            WITH batches AS (
+                SELECT
+                    COALESCE(sale_batch_no, order_no) AS batch_no,
+                    MAX(created_at) AS latest_at,
+                    BOOL_AND(
+                        COALESCE(BTRIM(sold_to), '') = ''
+                    ) AS all_blank
+                FROM transactions
+                WHERE group_id = %s
+                GROUP BY COALESCE(sale_batch_no, order_no)
+            )
+            SELECT batch_no
+            FROM batches
+            WHERE all_blank = TRUE
+            ORDER BY latest_at DESC
+            LIMIT 1
+            """,
+            (context_id,),
+        )
+        row = cur.fetchone()
+
+        return row["batch_no"] if row else None
+
+
+def update_sales_sheet_customer(order_nos, customer):
+    """
+    è£å®æåå¾ï¼åæ­¥æ´æ° Google Sheetãé·å®ç´éãå®¢æ¶æ¬ã
+    ä¸ç¢°å¶ä»äººå·¥æ¬ä½ã
+    """
+    if not order_nos:
+        return True
+
+    try:
+        sales_sheet = get_sales_sheet()
+        values = sales_sheet.get_all_values()
+
+        if not values:
+            return True
+
+        headers = [str(v).strip() for v in values[0]]
+
+        for required in ("å®¢æ¶", "è¨å®ç·¨è", "æå¾åæ­¥æé"):
+            if required not in headers:
+                print(
+                    "SALES SHEET CUSTOMER UPDATE ERROR:",
+                    f"ç¼ºå°æ¬ä½ {required}",
+                )
+                return False
+
+        customer_col = headers.index("å®¢æ¶")
+        order_col = headers.index("è¨å®ç·¨è")
+        sync_time_col = headers.index("æå¾åæ­¥æé")
+
+        targets = {str(v).strip() for v in order_nos}
+
+        from gspread.utils import rowcol_to_a1
+
+        updates = []
+        sync_time = now_tw()
+
+        for sheet_row, row in enumerate(values[1:], start=2):
+            order_value = (
+                str(row[order_col]).strip()
+                if order_col < len(row)
+                else ""
+            )
+
+            if order_value not in targets:
+                continue
+
+            updates.extend([
+                {
+                    "range": rowcol_to_a1(
+                        sheet_row,
+                        customer_col + 1,
+                    ),
+                    "values": [[customer]],
+                },
+                {
+                    "range": rowcol_to_a1(
+                        sheet_row,
+                        sync_time_col + 1,
+                    ),
+                    "values": [[sync_time]],
+                },
+            ])
+
+        if updates:
+            sales_sheet.batch_update(
+                updates,
+                value_input_option="USER_ENTERED",
+            )
+
+        return True
+
+    except Exception as e:
+        print(
+            "SALES SHEET CUSTOMER UPDATE ERROR:",
+            repr(e),
+        )
+        return False
+
+
+def fill_order_customer(
+    context_id,
+    customer,
+    order_or_batch_no=None,
+):
+    """
+    /è£å® åªè£ç©ºç½å®¢æ¶ã
+    å¦æåè¨å®å·²æå®¢æ¶ï¼ä¸ç´æ¥è¦èã
+    """
+    conn = get_db()
+
+    try:
+        if order_or_batch_no:
+            batch_no, orders = get_sale_batch_by_ref(
+                conn,
+                order_or_batch_no,
+            )
+        else:
+            batch_no = find_latest_blank_sale_batch(
+                conn,
+                context_id,
+            )
+
+            if not batch_no:
+                return {
+                    "ok": False,
+                    "reason": "no_blank_order",
+                }
+
+            batch_no, orders = get_sale_batch_by_ref(
+                conn,
+                batch_no,
+            )
+
+        if not orders:
+            return {
+                "ok": False,
+                "reason": "order_not_found",
+            }
+
+        # ååè¨±å¨ç®åç¾¤çµ/èå¤©å®¤è£å®ã
+        if any(
+            order["group_id"] != context_id
+            for order in orders
+        ):
+            return {
+                "ok": False,
+                "reason": "wrong_context",
+            }
+
+        existing_customers = sorted({
+            str(order["sold_to"] or "").strip()
+            for order in orders
+            if str(order["sold_to"] or "").strip()
+        })
+
+        if existing_customers:
+            return {
+                "ok": False,
+                "reason": "already_has_customer",
+                "customers": existing_customers,
+                "batch_no": batch_no,
+            }
+
+        order_nos = [order["order_no"] for order in orders]
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE transactions
+                SET sold_to = %s
+                WHERE order_no = ANY(%s)
+                """,
+                (customer, order_nos),
+            )
+
+            cur.execute(
+                """
+                UPDATE serials
+                SET sold_to = %s
+                WHERE order_no = ANY(%s)
+                """,
+                (customer, order_nos),
+            )
+
+        conn.commit()
+
+        sheet_ok = update_sales_sheet_customer(
+            order_nos,
+            customer,
+        )
+
+        return {
+            "ok": True,
+            "batch_no": batch_no,
+            "customer": customer,
+            "orders": orders,
+            "order_nos": order_nos,
+            "sheet_ok": sheet_ok,
+        }
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+# ==================================================
 # Google Sheet â Supabaseï¼åæ­¥è£å®
 # ==================================================
 
@@ -3456,6 +3728,162 @@ def handle_message(event):
 
 
         # ------------------------------------------
+        # è£ä¸ä¸å® å®¢æ¶
+        # ------------------------------------------
+
+        if text.startswith("è£ä¸ä¸å® "):
+
+            customer = (
+                text[len("è£ä¸ä¸å® "):]
+                .strip()
+            )
+
+            if not customer:
+                reply(
+                    event,
+                    "æ ¼å¼ï¼/è£ä¸ä¸å® å®¢æ¶å"
+                )
+                return
+
+            result = fill_order_customer(
+                context_id,
+                customer,
+            )
+
+            if not result["ok"]:
+
+                if result["reason"] == "no_blank_order":
+                    reply(
+                        event,
+                        "â ï¸ ç®åéåç¾¤çµæ²æå¯è£å®¢æ¶çè¨å®"
+                    )
+                    return
+
+                reply(
+                    event,
+                    "â ï¸ æ¾ä¸å°å¯è£çè¨å®"
+                )
+                return
+
+            lines = [
+                "â è£å®å®æ",
+                f"å®¢æ¶ï¼{customer}",
+                "",
+            ]
+
+            for order in result["orders"]:
+                lines.append(
+                    f"{order['code']} Ã {order['quantity']}"
+                )
+
+            lines.extend([
+                "",
+                f"ï¼è¨å®ç·¨è{result['batch_no']}ï¼",
+            ])
+
+            if not result["sheet_ok"]:
+                lines.append(
+                    "â ï¸ Google Sheet å®¢æ¶æ¬æ«ææªæ´æ°"
+                )
+
+            reply(
+                event,
+                "\n".join(lines)
+            )
+            return
+
+
+        # ------------------------------------------
+        # è£å® è¨å®ç·¨è å®¢æ¶
+        # ------------------------------------------
+
+        if text.startswith("è£å® "):
+
+            parts = text.split(maxsplit=2)
+
+            if len(parts) != 3:
+                reply(
+                    event,
+                    "æ ¼å¼ï¼/è£å® è¨å®ç·¨è å®¢æ¶å"
+                )
+                return
+
+            order_no = parts[1].strip()
+            customer = parts[2].strip()
+
+            result = fill_order_customer(
+                context_id,
+                customer,
+                order_or_batch_no=order_no,
+            )
+
+            if not result["ok"]:
+
+                if result["reason"] == "order_not_found":
+                    reply(
+                        event,
+                        f"â ï¸ æ¾ä¸å°è¨å®ï¼{order_no}"
+                    )
+                    return
+
+                if result["reason"] == "wrong_context":
+                    reply(
+                        event,
+                        "â ï¸ éç­è¨å®ä¸å±¬æ¼ç®åéåç¾¤çµ"
+                    )
+                    return
+
+                if result["reason"] == "already_has_customer":
+                    current = "ã".join(
+                        result.get("customers", [])
+                    )
+                    reply(
+                        event,
+                        "â ï¸ éç­è¨å®å·²ç¶æå®¢æ¶"
+                        + (
+                            f"ï¼{current}"
+                            if current
+                            else ""
+                        )
+                        + "\nè£å®ä¸æç´æ¥è¦èã"
+                    )
+                    return
+
+                reply(
+                    event,
+                    "â ï¸ ç¡æ³è£éç­è¨å®"
+                )
+                return
+
+            lines = [
+                "â è£å®å®æ",
+                f"å®¢æ¶ï¼{customer}",
+                "",
+            ]
+
+            for order in result["orders"]:
+                lines.append(
+                    f"{order['code']} Ã {order['quantity']}"
+                )
+
+            lines.extend([
+                "",
+                f"ï¼è¨å®ç·¨è{result['batch_no']}ï¼",
+            ])
+
+            if not result["sheet_ok"]:
+                lines.append(
+                    "â ï¸ Google Sheet å®¢æ¶æ¬æ«ææªæ´æ°"
+                )
+
+            reply(
+                event,
+                "\n".join(lines)
+            )
+            return
+
+
+        # ------------------------------------------
         # åæ­¥è£å®
         # Google Sheetãé·å®ç´éã -> Supabase
         # ------------------------------------------
@@ -3633,6 +4061,8 @@ def handle_message(event):
                 "æ¤åç¾¤çµä¸ä¸ç­ï¼/æ¤å\n"
                 "ä»æ¥é·å®ï¼/ä»æ¥é·å®\n"
                 "æ¥è¨å®ï¼/æ¥å® TXxxxxxxxx\n"
+                "è£ä¸ä¸å®ï¼/è£ä¸ä¸å® å®¢æ¶å\n"
+                "æå®è£å®ï¼/è£å® TXxxxxxxxx å®¢æ¶å\n"
                 "åæ­¥è£å®ï¼/åæ­¥è£å®\n"
                 "æ´çåºèå¯ç¢¼ï¼/æ´ç\n"
                 "ç©ºç½æ¹éèï¼/é"
