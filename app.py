@@ -43,7 +43,7 @@ configuration = Configuration(
 
 # ==================================================
 # Google Sheet
-# ç®ååªä¿çãå¸³åè¡¨ã
+# 目前只保留「帳務表」
 # ==================================================
 
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
@@ -68,16 +68,16 @@ spreadsheet = gc.open_by_key(
 )
 
 account_sheet = spreadsheet.worksheet(
-    "å¸³åè¡¨"
+    "帳務表"
 )
 
-SALES_SHEET_NAME = "é·å®ç´é"
+SALES_SHEET_NAME = "銷售紀錄"
 
 
 def get_sales_sheet():
     """
-    é·å®ç´éæ¡æ¶è¼å¥ã
-    å³ä½¿ Google Sheet æ«ææåé¡ï¼ä¹ä¸è¦è®æ´å° LINE Bot ååå¤±æã
+    銷售紀錄採懶載入。
+    即使 Google Sheet 暫時有問題，也不要讓整台 LINE Bot 啟動失敗。
     """
     return spreadsheet.worksheet(
         SALES_SHEET_NAME
@@ -90,25 +90,25 @@ def get_sales_sheet():
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# å¿«éåºåº«å¥å
-# /å¤§10ã/å¤§*10ã/1490*60 ... æè½ææ­£å¼åå code
+# 快速出庫別名
+# /大10、/大*10、/1490*60 ... 會轉成正式商品 code
 QUICK_PRODUCT_ALIASES = {
-    "å¤§": "å¤§å¡",
-    "å°": "å°å¡",
-    "500": "è²500",
-    "1000": "è²1000",
-    "1490": "è²1490",
-    "2990": "è²2990",
+    "大": "大卡",
+    "小": "小卡",
+    "500": "貝500",
+    "1000": "貝1000",
+    "1490": "貝1490",
+    "2990": "貝2990",
     "M3": "MY3000",
     "M5": "MY5000",
-    "M1W": "MY1è¬",
+    "M1W": "MY1萬",
 }
 
 
-# LINE ç®¡çå¡åå®
-# Render ç°å¢è®æ¸ä»æ²¿ç¨ï¼ALLOWED_LINE_USER_IDS
-# éè£¡æ¾çæ¯ãç®¡çå¡ãLINE User ID
-# å¤åç®¡çå¡ç¨éèåé
+# LINE 管理員名單
+# Render 環境變數仍沿用：ALLOWED_LINE_USER_IDS
+# 這裡放的是「管理員」LINE User ID
+# 多個管理員用逗號分隔
 ADMIN_LINE_USER_IDS = {
     item.strip()
     for item in os.getenv(
@@ -135,7 +135,7 @@ def get_db():
 
 
 # ==================================================
-# å±ç¨å·¥å·
+# 共用工具
 # ==================================================
 
 def now_tw():
@@ -146,17 +146,17 @@ def now_tw():
 
 def get_operator(event):
     try:
-        return event.source.user_id or "æªç¥"
+        return event.source.user_id or "未知"
     except Exception:
-        return "æªç¥"
+        return "未知"
 
 
 def get_context_id(event):
     """
-    ä»¥ LINE ç¾¤çµçºåªåã
-    ç¾¤çµï¼group:<group_id>
-    å¤äººèå¤©å®¤ï¼room:<room_id>
-    ä¸å°ä¸èå¤©ï¼user:<user_id>
+    以 LINE 群組為優先。
+    群組：group:<group_id>
+    多人聊天室：room:<room_id>
+    一對一聊天：user:<user_id>
     """
     try:
         group_id = getattr(event.source, "group_id", None)
@@ -178,12 +178,12 @@ def get_context_id(event):
 
 
 def is_admin(operator):
-    """Render ALLOWED_LINE_USER_IDS å§çäºº = ç®¡çå¡ã"""
+    """Render ALLOWED_LINE_USER_IDS 內的人 = 管理員。"""
     return operator in ADMIN_LINE_USER_IDS
 
 
 def is_authorized_user(operator):
-    """ä¸è¬ä½¿ç¨èæ¬éå­æ¾å¨ Supabase authorized_usersã"""
+    """一般使用者權限存放在 Supabase authorized_users。"""
     conn = get_db()
 
     try:
@@ -206,7 +206,7 @@ def is_authorized_user(operator):
 
 
 def can_use_bot(operator):
-    """ç®¡çå¡æ active çä¸è¬ä½¿ç¨èé½å¯ä»¥ä½¿ç¨æ©å¨äººã"""
+    """管理員或 active 的一般使用者都可以使用機器人。"""
     if is_admin(operator):
         return True
 
@@ -297,9 +297,9 @@ def get_authorized_users():
 
 
 def reply(event, text):
-    # LINE å®åæå­è¨æ¯é¿åéé·
+    # LINE 單則文字訊息避免過長
     if len(text) > 4900:
-        text = text[:4850] + "\n\nâ ï¸ å§å®¹éé·ï¼å·²æªç­ã"
+        text = text[:4850] + "\n\n⚠️ 內容過長，已截短。"
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
@@ -315,7 +315,7 @@ def reply(event, text):
 
 
 def reply_messages(event, texts):
-    """ä¸æ¬¡åè¦å¤å LINE æå­æ³¡æ³¡ã"""
+    """一次回覆多個 LINE 文字泡泡。"""
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
@@ -371,8 +371,8 @@ def format_db_time(value):
 
 
 # ==================================================
-# ååæ¥è©¢
-# ååä»£ç¢¼å¿½ç¥è±æå¤§å°å¯«
+# 商品查詢
+# 商品代碼忽略英文大小寫
 # ==================================================
 
 def find_product(conn, product_text):
@@ -395,7 +395,7 @@ def find_product(conn, product_text):
 
 
 # ==================================================
-# Google Sheet å¸³å
+# Google Sheet 帳務
 # ==================================================
 
 def get_customer_balance(customer):
@@ -405,12 +405,12 @@ def get_customer_balance(customer):
 
     for row in records:
         if (
-            str(row.get("å®¢æ¶", "")).strip()
+            str(row.get("客戶", "")).strip()
             == customer
         ):
             try:
                 balance += int(
-                    str(row.get("éé¡", 0))
+                    str(row.get("金額", 0))
                     .replace(",", "")
                 )
             except Exception:
@@ -421,11 +421,11 @@ def get_customer_balance(customer):
 
 
 # ==================================================
-# Google Sheetï¼é·å®ç´é
+# Google Sheet：銷售紀錄
 #
-# æ¬ä½ï¼
-# æ¥æãå®¢æ¶ãæ¸éï¼æææ£ï¼ãå®å¹ãå®å¹éé¡ãææ¬ãå©æ½¤ã
-# ååï¼ææåï¼ãè¨å®ç·¨èãåæ­¥çæãæå¾åæ­¥æé
+# 欄位：
+# 日期、客戶、數量（或折扣）、單價、售價金額、成本、利潤、
+# 商品（或服務）、訂單編號、同步狀態、最後同步時間
 # ==================================================
 
 def sales_date_tw():
@@ -439,21 +439,21 @@ def append_sales_rows(
     items,
 ):
     """
-    åºåº«å®æå¾ï¼ææ¯ååååå¯«ä¸åå°ãé·å®ç´éãã
+    出庫完成後，把每個商品各寫一列到「銷售紀錄」。
 
-    items æ¯ç­éè¦ï¼
+    items 每筆需要：
     - product.code
     - quantity
     - order_no
 
-    ç®åï¼
-    - å®¢æ¶æå°±å¸¶å¥ï¼æ²æå¯ç©ºç½
-    - å®å¹ / å®å¹éé¡ / ææ¬ / å©æ½¤åç©ºç½
-    - åæ­¥çæåºå®ãå¾è£ã
-    - æå¾åæ­¥æéåç©ºç½
+    目前：
+    - 客戶有就帶入，沒有可空白
+    - 單價 / 售價金額 / 成本 / 利潤先空白
+    - 同步狀態固定「待補」
+    - 最後同步時間先空白
 
-    Google Sheet å¯«å¥å¤±æä¸åæ»¾å·²æåçæ­£å¼åºåº«ï¼
-    åªåå³ Falseï¼é¿å Sheet æ«ææéé æåº«å­äº¤æå¤±æã
+    Google Sheet 寫入失敗不回滾已成功的正式出庫，
+    只回傳 False，避免 Sheet 暫時故障造成庫存交易失敗。
     """
     try:
         sales_sheet = get_sales_sheet()
@@ -471,7 +471,7 @@ def append_sales_rows(
                 "",
                 item["product"]["code"],
                 item["order_no"],
-                "å¾è£",
+                "待補",
                 "",
             ])
 
@@ -493,8 +493,8 @@ def append_sales_rows(
 
 def mark_sales_rows_undone(order_nos):
     """
-    æ¤ååºåº«å¾ï¼ä¸åªé¤ Google Sheet æ­·å²ç´éï¼
-    èæ¯æå°æè¨å®çãåæ­¥çæãæ¨è¨çºãå·²æ¤åãã
+    撤回出庫後，不刪除 Google Sheet 歷史紀錄，
+    而是把對應訂單的「同步狀態」標記為「已撤回」。
     """
     if not order_nos:
         return True
@@ -512,9 +512,9 @@ def mark_sales_rows_undone(order_nos):
         ]
 
         required = {
-            "è¨å®ç·¨è",
-            "åæ­¥çæ",
-            "æå¾åæ­¥æé",
+            "訂單編號",
+            "同步狀態",
+            "最後同步時間",
         }
 
         if not required.issubset(
@@ -522,18 +522,18 @@ def mark_sales_rows_undone(order_nos):
         ):
             print(
                 "SALES SHEET UNDO ERROR: "
-                "ç¼ºå°å¿è¦æ¬ä½"
+                "缺少必要欄位"
             )
             return False
 
         order_col = headers.index(
-            "è¨å®ç·¨è"
+            "訂單編號"
         )
         status_col = headers.index(
-            "åæ­¥çæ"
+            "同步狀態"
         )
         synced_col = headers.index(
-            "æå¾åæ­¥æé"
+            "最後同步時間"
         )
 
         target_order_nos = {
@@ -557,12 +557,12 @@ def mark_sales_rows_undone(order_nos):
             if order_value not in target_order_nos:
                 continue
 
-            # ä¸æ¬¡æ´æ°ãåæ­¥çæãèãæå¾åæ­¥æéãå©æ¬ã
+            # 一次更新「同步狀態」與「最後同步時間」兩欄。
             start_col = status_col + 1
             end_col = synced_col + 1
 
-            # ç®åå©æ¬å¨ä½¿ç¨èæå®è¡¨æ ¼ä¸­æ¯ç¸é°ç JãKã
-            # è¥æªä¾æ¬ä½ç§»åï¼ä»ä»¥å¯¦éæ¨é¡ä½ç½®è¨ç®ã
+            # 目前兩欄在使用者指定表格中是相鄰的 J、K。
+            # 若未來欄位移動，仍以實際標題位置計算。
             if end_col == start_col + 1:
                 from gspread.utils import rowcol_to_a1
 
@@ -580,7 +580,7 @@ def mark_sales_rows_undone(order_nos):
                         f"{start_a1}:{end_a1}"
                     ),
                     "values": [[
-                        "å·²æ¤å",
+                        "已撤回",
                         sync_time,
                     ]],
                 })
@@ -600,7 +600,7 @@ def mark_sales_rows_undone(order_nos):
                     {
                         "range": status_a1,
                         "values": [[
-                            "å·²æ¤å"
+                            "已撤回"
                         ]],
                     },
                     {
@@ -628,13 +628,13 @@ def mark_sales_rows_undone(order_nos):
 
 
 # ==================================================
-# è£å®ï¼è£ä¸æ¢æè¨å®çå®¢æ¶
+# 補單：補上既有訂單的客戶
 # ==================================================
 
 def get_sale_batch_by_ref(conn, order_or_batch_no):
     """
-    å¯æ¥åå®å order_noãå¤åé  sale_batch_noï¼
-    æå¤åé å¶ä¸­ä¸å child order_noã
+    可接受單品 order_no、多品項 sale_batch_no，
+    或多品項其中一個 child order_no。
     """
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
@@ -682,7 +682,7 @@ def get_sale_batch_by_ref(conn, order_or_batch_no):
 
 def find_latest_blank_sale_batch(conn, context_id):
     """
-    æ¾ç®åç¾¤çµæè¿ä¸ç­ãæ´æ¹å®¢æ¶çç©ºç½ãçåºåº«ã
+    找目前群組最近一筆「整批客戶皆空白」的出庫。
     """
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
@@ -713,8 +713,8 @@ def find_latest_blank_sale_batch(conn, context_id):
 
 def update_sales_sheet_customer(order_nos, customer):
     """
-    è£å®æåå¾ï¼åæ­¥æ´æ° Google Sheetãé·å®ç´éãå®¢æ¶æ¬ã
-    ä¸ç¢°å¶ä»äººå·¥æ¬ä½ã
+    補單成功後，同步更新 Google Sheet「銷售紀錄」客戶欄。
+    不碰其他人工欄位。
     """
     if not order_nos:
         return True
@@ -728,17 +728,17 @@ def update_sales_sheet_customer(order_nos, customer):
 
         headers = [str(v).strip() for v in values[0]]
 
-        for required in ("å®¢æ¶", "è¨å®ç·¨è", "æå¾åæ­¥æé"):
+        for required in ("客戶", "訂單編號", "最後同步時間"):
             if required not in headers:
                 print(
                     "SALES SHEET CUSTOMER UPDATE ERROR:",
-                    f"ç¼ºå°æ¬ä½ {required}",
+                    f"缺少欄位 {required}",
                 )
                 return False
 
-        customer_col = headers.index("å®¢æ¶")
-        order_col = headers.index("è¨å®ç·¨è")
-        sync_time_col = headers.index("æå¾åæ­¥æé")
+        customer_col = headers.index("客戶")
+        order_col = headers.index("訂單編號")
+        sync_time_col = headers.index("最後同步時間")
 
         targets = {str(v).strip() for v in order_nos}
 
@@ -796,8 +796,8 @@ def fill_order_customer(
     order_or_batch_no=None,
 ):
     """
-    /è£å® åªè£ç©ºç½å®¢æ¶ã
-    å¦æåè¨å®å·²æå®¢æ¶ï¼ä¸ç´æ¥è¦èã
+    /補單 只補空白客戶。
+    如果原訂單已有客戶，不直接覆蓋。
     """
     conn = get_db()
 
@@ -830,7 +830,7 @@ def fill_order_customer(
                 "reason": "order_not_found",
             }
 
-        # ååè¨±å¨ç®åç¾¤çµ/èå¤©å®¤è£å®ã
+        # 僅允許在目前群組/聊天室補單。
         if any(
             order["group_id"] != context_id
             for order in orders
@@ -900,28 +900,28 @@ def fill_order_customer(
 
 
 # ==================================================
-# Google Sheet â Supabaseï¼åæ­¥è£å®
+# Google Sheet → Supabase：同步補單
 # ==================================================
 
 SALES_REQUIRED_HEADERS = [
-    "æ¥æ",
-    "å®¢æ¶",
-    "æ¸éï¼æææ£ï¼",
-    "å®å¹",
-    "å®å¹éé¡",
-    "ææ¬",
-    "å©æ½¤",
-    "ååï¼ææåï¼",
-    "è¨å®ç·¨è",
-    "åæ­¥çæ",
-    "æå¾åæ­¥æé",
+    "日期",
+    "客戶",
+    "數量（或折扣）",
+    "單價",
+    "售價金額",
+    "成本",
+    "利潤",
+    "商品（或服務）",
+    "訂單編號",
+    "同步狀態",
+    "最後同步時間",
 ]
 
 
 def parse_optional_decimal(value):
     """
-    Sheet ç©ºç½ -> None
-    æ¯æ´ï¼
+    Sheet 空白 -> None
+    支援：
     9,170
     NT$9,170
     $9,170
@@ -936,9 +936,9 @@ def parse_optional_decimal(value):
         raw
         .replace(",", "")
         .replace("NT$", "")
-        .replace("NTï¼", "")
+        .replace("NT＄", "")
         .replace("$", "")
-        .replace("ï¼", "")
+        .replace("＄", "")
         .strip()
     )
 
@@ -946,7 +946,7 @@ def parse_optional_decimal(value):
         return Decimal(cleaned)
     except InvalidOperation:
         raise ValueError(
-            f"ä¸æ¯æææ¸å­ï¼{raw}"
+            f"不是有效數字：{raw}"
         )
 
 
@@ -962,8 +962,8 @@ def decimals_equal(left, right):
 
 def normalize_customer(value):
     """
-    å®¢æ¶ç©ºç½ä¹è¦è½è¦èã
-    transactions.sold_to ç®åæ²¿ç¨ç©ºå­ä¸²ä»£è¡¨ãæªå¡«ãã
+    客戶空白也要能覆蓋。
+    transactions.sold_to 目前沿用空字串代表「未填」。
     """
     return str(value or "").strip()
 
@@ -976,11 +976,11 @@ def is_sales_row_complete(
     profit,
 ):
     """
-    ç¬¬ä¸çå®ææ¢ä»¶ï¼
-    å®¢æ¶ãå®å¹ãå®å¹éé¡ãææ¬ãå©æ½¤é½æå¼ -> å·²åæ­¥
-    åªè¦æä¸é ç©ºç½ -> å¾è£
+    第一版完成條件：
+    客戶、單價、售價金額、成本、利潤都有值 -> 已同步
+    只要有一項空白 -> 待補
 
-    å³ä½¿ä»æ¯ãå¾è£ãï¼æå¡«æè¢«æ¸ç©ºçæ¬ä½ä¸æ¨£æåæ­¥å Supabaseã
+    即使仍是「待補」，有填或被清空的欄位一樣會同步回 Supabase。
     """
     return (
         customer != ""
@@ -1052,15 +1052,15 @@ def update_transaction_from_sheet(
 
 def sync_sales_sheet_to_supabase():
     """
-    è®å Google Sheetãé·å®ç´éãï¼å°äººå·¥ä¿®æ¹åæ­¥å Supabaseã
+    讀取 Google Sheet「銷售紀錄」，將人工修改同步回 Supabase。
 
-    è¦åï¼
-    - å®¢æ¶ / å®å¹ / å®å¹éé¡ / ææ¬ / å©æ½¤ï¼æå¼æç©ºç½é½ç§ Sheet åæ­¥
-    - ç©ºç½å¯ä»¥æ¸æ Supabase åæ¬å¼
-    - åå / æ¸é / è¨å®ç·¨èï¼ç®åä¸å¾ Sheet åå¯«ï¼é¿åç ´å£åº«å­èåºèéè¯
-    - å·²æ¤åçåè·³é
-    - å®æ´ -> å·²åæ­¥
-    - éæç©ºç½ -> å¾è£
+    規則：
+    - 客戶 / 單價 / 售價金額 / 成本 / 利潤：有值或空白都照 Sheet 同步
+    - 空白可以清掉 Supabase 原本值
+    - 商品 / 數量 / 訂單編號：目前不從 Sheet 回寫，避免破壞庫存與序號關聯
+    - 已撤回的列跳過
+    - 完整 -> 已同步
+    - 還有空白 -> 待補
     """
     sales_sheet = get_sales_sheet()
     values = sales_sheet.get_all_values()
@@ -1120,43 +1120,43 @@ def sync_sales_sheet_to_supabase():
                     return ""
                 return str(row[col]).strip()
 
-            order_no = cell("è¨å®ç·¨è")
-            status = cell("åæ­¥çæ")
+            order_no = cell("訂單編號")
+            status = cell("同步狀態")
 
-            # ç©ºç½åç´æ¥è·³é
+            # 空白列直接跳過
             if not order_no:
                 if any(
                     str(value).strip()
                     for value in row
                 ):
                     invalid.append(
-                        f"ç¬¬ {sheet_row_no} åï¼è¨å®ç·¨èç©ºç½"
+                        f"第 {sheet_row_no} 列：訂單編號空白"
                     )
                 continue
 
-            if status == "å·²æ¤å":
+            if status == "已撤回":
                 skipped_undone += 1
                 continue
 
             try:
                 customer = normalize_customer(
-                    cell("å®¢æ¶")
+                    cell("客戶")
                 )
                 unit_price = parse_optional_decimal(
-                    cell("å®å¹")
+                    cell("單價")
                 )
                 sale_amount = parse_optional_decimal(
-                    cell("å®å¹éé¡")
+                    cell("售價金額")
                 )
                 cost = parse_optional_decimal(
-                    cell("ææ¬")
+                    cell("成本")
                 )
                 profit = parse_optional_decimal(
-                    cell("å©æ½¤")
+                    cell("利潤")
                 )
             except ValueError as e:
                 invalid.append(
-                    f"ç¬¬ {sheet_row_no} åï¼{e}"
+                    f"第 {sheet_row_no} 列：{e}"
                 )
                 continue
 
@@ -1168,7 +1168,7 @@ def sync_sales_sheet_to_supabase():
             if not current:
                 not_found += 1
                 invalid.append(
-                    f"ç¬¬ {sheet_row_no} åï¼æ¾ä¸å°è¨å® {order_no}"
+                    f"第 {sheet_row_no} 列：找不到訂單 {order_no}"
                 )
                 continue
 
@@ -1195,7 +1195,7 @@ def sync_sales_sheet_to_supabase():
             )
 
             new_status = (
-                "å·²åæ­¥"
+                "已同步"
                 if is_sales_row_complete(
                     customer,
                     unit_price,
@@ -1203,7 +1203,7 @@ def sync_sales_sheet_to_supabase():
                     cost,
                     profit,
                 )
-                else "å¾è£"
+                else "待補"
             )
 
             status_changed = (
@@ -1224,15 +1224,15 @@ def sync_sales_sheet_to_supabase():
             else:
                 unchanged += 1
 
-            # æè³æè®åæçæéè¦ä¿®æ­£æï¼æ´æ° Sheet çæèæéã
+            # 有資料變動或狀態需要修正時，更新 Sheet 狀態與時間。
             if changed or status_changed:
                 status_a1 = rowcol_to_a1(
                     sheet_row_no,
-                    idx["åæ­¥çæ"] + 1,
+                    idx["同步狀態"] + 1,
                 )
                 time_a1 = rowcol_to_a1(
                     sheet_row_no,
-                    idx["æå¾åæ­¥æé"] + 1,
+                    idx["最後同步時間"] + 1,
                 )
 
                 sheet_updates.extend([
@@ -1276,7 +1276,7 @@ def sync_sales_sheet_to_supabase():
 
 
 # ==================================================
-# Supabaseï¼ææåº«å­
+# Supabase：所有庫存
 # ==================================================
 
 def get_all_inventory():
@@ -1313,7 +1313,7 @@ def get_all_inventory():
 
 
 # ==================================================
-# Supabaseï¼å®ä¸åååº«å­
+# Supabase：單一商品庫存
 # ==================================================
 
 def get_product_inventory(product_text):
@@ -1351,27 +1351,27 @@ def get_product_inventory(product_text):
 def resolve_quick_product_alias(value):
     key = value.strip()
 
-    # è±æå­æ¯å¥åå¿½ç¥å¤§å°å¯«
+    # 英文字母別名忽略大小寫
     for alias, product_code in QUICK_PRODUCT_ALIASES.items():
         if alias.upper() == key.upper():
             return product_code
 
-    # ä¸å¨å¥åè¡¨æï¼ç´æ¥æè¼¸å¥ç¶æ­£å¼åå code
+    # 不在別名表時，直接把輸入當正式商品 code
     return key
 
 
 def parse_quick_sale_line(line):
     """
-    æ¯æ´ï¼
-    /å¤§10
-    /å¤§*10
+    支援：
+    /大10
+    /大*10
     /1490*60
-    /åºå¤§10
-    /ç¼å¤§*10
+    /出大10
+    /發大*10
     /MY3000*5
 
-    ç¡ * æï¼çºé¿åæ­£å¼åå code èæ¸éé»å¨ä¸èµ·ç¢çæ­§ç¾©ï¼
-    åªæ¥åå·²è¨­å®çå¿«éå¥åã
+    無 * 時，為避免正式商品 code 與數量黏在一起產生歧義，
+    只接受已設定的快速別名。
     """
     value = line.strip()
 
@@ -1380,7 +1380,7 @@ def parse_quick_sale_line(line):
 
     body = value[1:].strip()
 
-    if body.startswith("åº") or body.startswith("ç¼"):
+    if body.startswith("出") or body.startswith("發"):
         body = body[1:].strip()
 
     if not body:
@@ -1389,7 +1389,7 @@ def parse_quick_sale_line(line):
             "reason": "empty",
         }
 
-    # æ *ï¼å·¦éå¯ç¨å¥åï¼ä¹å¯ç´æ¥æ­£å¼åå code
+    # 有 *：左邊可用別名，也可直接正式商品 code
     if "*" in body:
         left, right = body.rsplit("*", 1)
 
@@ -1410,8 +1410,8 @@ def parse_quick_sale_line(line):
             "quantity": int(qty_text),
         }
 
-    # ç¡ *ï¼åªå°å¿«éå¥ååãå¥å + æ¸éãè¾¨è­
-    # é·å¥ååªåï¼é¿å 1 / 10 / 1000 é¡åèª¤å¤
+    # 無 *：只對快速別名做「別名 + 數量」辨識
+    # 長別名優先，避免 1 / 10 / 1000 類型誤判
     aliases = sorted(
         QUICK_PRODUCT_ALIASES.keys(),
         key=len,
@@ -1437,8 +1437,8 @@ def parse_quick_sale_line(line):
 
 def parse_quick_sale_message(raw_text):
     """
-    åªè¦æ´åè¨æ¯çéç©ºç½è¡é½ä»¥ / éé ­ï¼
-    å°±è¦çºå¿«éå¤åé åºåº«ã
+    只要整則訊息的非空白行都以 / 開頭，
+    就視為快速多品項出庫。
     """
     lines = [
         line.strip()
@@ -1461,9 +1461,9 @@ def parse_quick_sale_message(raw_text):
         item = parse_quick_sale_line(line)
 
         if not item or not item.get("ok"):
-            # å®è¡å¯è½æ¯å¶ä»æ­£å¼ / æä»¤ï¼ä¾å¦ï¼
-            # /ç¼ å°ç¾ å¤§å¡ 10ã/æ¥åº«å­ å¤§å¡
-            # äº¤åå¾é¢çæ­£å¼æä»¤èçã
+            # 單行可能是其他正式 / 指令，例如：
+            # /發 小美 大卡 10、/查庫存 大卡
+            # 交回後面的正式指令處理。
             if len(lines) == 1:
                 return None
 
@@ -1485,7 +1485,7 @@ def parse_quick_sale_message(raw_text):
 
         parsed.append(item)
 
-    # åååéè¤åºç¾æï¼èªååä½µæ¸é
+    # 同商品重複出現時，自動合併數量
     merged = []
     positions = {}
 
@@ -1521,19 +1521,19 @@ def parse_quick_sale_message(raw_text):
 
 def format_labeled_pairs(raw_text):
     """
-    /æ´ç
+    /整理
 
-    ä¸çç·¨èä¸éï¼ç´æ¥ä¾ç§åºç¾é åºï¼
-    ææ¯ä¸çµãåºè + å¯ç¢¼ãéæåä¸è¡ã
+    不看編號上限，直接依照出現順序，
+    把每一組「序號 + 密碼」配成同一行。
     """
     body = raw_text.strip()
 
-    if body.startswith("/æ´ç"):
-        body = body[len("/æ´ç"):].lstrip("\r\n ")
+    if body.startswith("/整理"):
+        body = body[len("/整理"):].lstrip("\r\n ")
 
-    # æåºæ¯ä¸ç­æ¨ç±¤è³æï¼ä¸éå¶ç·¨èä½æ¸èçµæ¸
+    # 抓出每一筆標籤資料，不限制編號位數與組數
     pattern = re.compile(
-        r"(åºè|å¯ç¢¼)\s*[0-9ï¼-ï¼]*\s*[:ï¼]\s*([^\r\n]+)",
+        r"(序號|密碼)\s*[0-9０-９]*\s*[:：]\s*([^\r\n]+)",
         re.IGNORECASE,
     )
 
@@ -1555,24 +1555,24 @@ def format_labeled_pairs(raw_text):
     pending_serial = None
 
     for label, value in tokens:
-        if label == "åºè":
-            # å¦æåä¸ååºèéæ²ç­å°å¯ç¢¼ï¼å°±è¦çºä¸å®æ´
+        if label == "序號":
+            # 如果前一個序號還沒等到密碼，就視為不完整
             if pending_serial is not None:
                 return {
                     "ok": False,
                     "reason": "missing_pair",
-                    "numbers": ["åä¸çµ"],
+                    "numbers": ["前一組"],
                 }
 
             pending_serial = value
             continue
 
-        # label == å¯ç¢¼
+        # label == 密碼
         if pending_serial is None:
             return {
                 "ok": False,
                 "reason": "missing_pair",
-                "numbers": ["åä¸çµ"],
+                "numbers": ["前一組"],
             }
 
         rows.append(
@@ -1584,7 +1584,7 @@ def format_labeled_pairs(raw_text):
         return {
             "ok": False,
             "reason": "missing_pair",
-            "numbers": ["æå¾ä¸çµ"],
+            "numbers": ["最後一組"],
         }
 
     if not rows:
@@ -1603,12 +1603,12 @@ def format_labeled_pairs(raw_text):
 
 def add_comma_between_columns(raw_text):
     """
-    /é
-    å°ï¼
+    /逗
+    將：
     AAA    BBB
     CCC<TAB>DDD
 
-    è®æï¼
+    變成：
     AAA,BBB
     CCC,DDD
     """
@@ -1618,13 +1618,13 @@ def add_comma_between_columns(raw_text):
         if line.strip()
     ]
 
-    if lines and lines[0].lstrip().startswith("/é"):
+    if lines and lines[0].lstrip().startswith("/逗"):
         lines = lines[1:]
 
     rows = []
 
     for line in lines:
-        # ä»¥ä»»æé£çºç©ºç½ï¼ç©ºæ ¼æ Tabï¼åæå©æ¬
+        # 以任意連續空白（空格或 Tab）切成兩欄
         parts = re.split(r"\s+", line.strip(), maxsplit=1)
 
         if len(parts) != 2:
@@ -1661,8 +1661,8 @@ def add_comma_between_columns(raw_text):
 
 def split_text_chunks(text, max_len=4300):
     """
-    LINE å®åæå­è¨æ¯ä¸éç´ 5000 å­åã
-    ä¿å®åå¨ 4300ï¼ä¸¦ç¡éä¾æè¡åéã
+    LINE 單則文字訊息上限約 5000 字元。
+    保守切在 4300，並盡量依換行切開。
     """
     if len(text) <= max_len:
         return [text]
@@ -1703,12 +1703,12 @@ def sell_multiple_items(
     requested_items,
 ):
     """
-    å¤åé ä¸æ¬¡åºåº«ï¼
-    - å¨é¨åº«å­é½è¶³å¤ ææä¸èµ·æå
-    - ä»»ä¸ååä¸è¶³å°±æ´ç­ rollback
-    - å±ç¨åä¸åãæ¹æ¬¡è¨å®ç·¨èã
-    - æ¯åååä»æèªå·±ç child order_no
-    - stock_actions åªè¨ 1 ç­ï¼å æ­¤ãæ¤åãææ´æ¹æ¤å
+    多品項一次出庫：
+    - 全部庫存都足夠才會一起成功
+    - 任一商品不足就整筆 rollback
+    - 共用同一個「批次訂單編號」
+    - 每個商品仍有自己的 child order_no
+    - stock_actions 只記 1 筆，因此「撤回」會整批撤回
     """
     conn = get_db()
 
@@ -1719,7 +1719,7 @@ def sell_multiple_items(
             cursor_factory=RealDictCursor
         ) as cur:
 
-            # åæ¥ååãéå®ååé åºèã
+            # 先查商品、鎖定各品項序號。
             for requested in requested_items:
 
                 product = find_product(
@@ -1757,7 +1757,7 @@ def sell_multiple_items(
                 rows = cur.fetchall()
 
                 if len(rows) < quantity:
-                    # åæ¥å¯¦éå¯ç¨ç¸½æ¸ï¼è®é¯èª¤è¨æ¯æ´æ¸æ¥
+                    # 再查實際可用總數，讓錯誤訊息更清楚
                     cur.execute(
                         """
                         SELECT COUNT(*)
@@ -1875,13 +1875,13 @@ def sell_multiple_items(
                 ),
             )
 
-        # åçµåè¦å§å®¹ï¼è¥ LINE éè¦è¶é 5 åï¼
-        # å°±ä¸æäº¤ï¼é¿ååºåº«æåå»æ¿ä¸å®æ´åºèã
+        # 先組回覆內容，若 LINE 需要超過 5 則，
+        # 就不提交，避免出庫成功卻拿不完整序號。
         serial_sections = []
 
         for item in result_items:
             section = [
-                f"ã{item['product']['code']} Ã {item['quantity']}ã"
+                f"【{item['product']['code']} × {item['quantity']}】"
             ]
             section.extend(
                 item["serials"]
@@ -1899,8 +1899,8 @@ def sell_multiple_items(
             serial_text
         )
 
-        # LINE Reply API å®æ¬¡æå¤ 5 åï¼
-        # æå¤ 4 ååºè + 1 åæè¦ã
+        # LINE Reply API 單次最多 5 則：
+        # 最多 4 則序號 + 1 則摘要。
         if len(serial_chunks) > 4:
             conn.rollback()
 
@@ -1927,10 +1927,10 @@ def sell_multiple_items(
 
 
 # ==================================================
-# Supabaseï¼ç¼åºè
+# Supabase：發序號
 #
-# FOR UPDATE SKIP LOCKEDï¼
-# å¤äººåææä½æé¿åæ¿å°ç¸ååºè
+# FOR UPDATE SKIP LOCKED：
+# 多人同時操作時避免拿到相同序號
 # ==================================================
 
 def sell_serials(
@@ -1961,7 +1961,7 @@ def sell_serials(
             cursor_factory=RealDictCursor
         ) as cur:
 
-            # éä½æ¬æ¬¡æºåç¼åºçåºè
+            # 鎖住本次準備發出的序號
             cur.execute(
                 """
                 SELECT id, serial
@@ -2002,7 +2002,7 @@ def sell_serials(
                 for row in rows
             ]
 
-            # æ´æ°åºèçæ
+            # 更新序號狀態
             cur.execute(
                 """
                 UPDATE serials
@@ -2022,7 +2022,7 @@ def sell_serials(
                 ),
             )
 
-            # æ°å¢ä¸ç­äº¤æç´é
+            # 新增一筆交易紀錄
             cur.execute(
                 """
                 INSERT INTO transactions (
@@ -2047,7 +2047,7 @@ def sell_serials(
                 ),
             )
 
-            # è¨ééåç¾¤çµçä¸æ¬¡ãåºåº«åä½ã
+            # 記錄這個群組的一次「出庫動作」
             cur.execute(
                 """
                 INSERT INTO stock_actions (
@@ -2065,7 +2065,7 @@ def sell_serials(
                 ),
             )
 
-            # æ¥å©é¤åº«å­
+            # 查剩餘庫存
             cur.execute(
                 """
                 SELECT COUNT(*)
@@ -2097,8 +2097,8 @@ def sell_serials(
 
 
 # ==================================================
-# Supabaseï¼å¥åº«
-# ä¸è¡ä¸ååºèï¼åºèå§å®¹åæ¨£ä¿å­
+# Supabase：入庫
+# 一行一個序號；序號內容原樣保存
 # ==================================================
 
 def stock_in_serials(
@@ -2167,7 +2167,7 @@ def stock_in_serials(
                         serial_value
                     )
 
-            # åªæççææ°å¢åºèï¼æè¨æä¸æ¬¡å¯æ¤ååä½
+            # 只有真的有新增序號，才記成一次可撤回動作
             if added:
                 cur.execute(
                     """
@@ -2218,9 +2218,9 @@ def stock_in_serials(
 
 
 # ==================================================
-# Supabaseï¼æ¤ååºåº«
-# ãæ¤åãï¼æ¤åèªå·±æå¾ä¸ç­åºåº«
-# ãæ¤å TX...ãï¼æ¤åèªå·±æå®çè¨å®
+# Supabase：撤回出庫
+# 「撤回」＝撤回自己最後一筆出庫
+# 「撤回 TX...」＝撤回自己指定的訂單
 # ==================================================
 
 def undo_last_action(
@@ -2228,8 +2228,8 @@ def undo_last_action(
     operator,
 ):
     """
-    æ¤åãéåç¾¤çµ / èå¤©å®¤ãæè¿ä¸ç­å°æªæ¤åçåº«å­åä½ã
-    ä¸åæä½èï¼ç¾¤çµå§ææ¬éçäººé½å¯æ¤åç¾¤çµä¸ä¸ç­ã
+    撤回「這個群組 / 聊天室」最近一筆尚未撤回的庫存動作。
+    不分操作者，群組內有權限的人都可撤回群組上一筆。
     """
     conn = get_db()
 
@@ -2270,7 +2270,7 @@ def undo_last_action(
                 }
 
             # ------------------------------
-            # æ¤åå¥åº«
+            # 撤回入庫
             # ------------------------------
             if action["action_type"] == "stock_in":
 
@@ -2296,10 +2296,10 @@ def undo_last_action(
 
                 rows = cur.fetchall()
 
-                # èçæ¾æå¥åº«åä½å·²å¯«å¥ stock_actionsï¼
-                # ä½ serials.batch_no æ²ææ­£ç¢ºçä¸çææ³ã
-                # PostgreSQL åä¸ transaction ç now() æéç¸åï¼
-                # å æ­¤å¯ç¨ operator + created_at ç²¾æºæ¾åè©²æ¹èå¥åº«ã
+                # 舊版曾有入庫動作已寫入 stock_actions，
+                # 但 serials.batch_no 沒有正確留下的情況。
+                # PostgreSQL 同一 transaction 的 now() 時間相同，
+                # 因此可用 operator + created_at 精準找回該批舊入庫。
                 if not rows:
                     cur.execute(
                         """
@@ -2337,8 +2337,8 @@ def undo_last_action(
                         "batch_no": action["ref_no"],
                     }
 
-                # å¦æéæ¹åºèå¾ä¾å·²ç¶è¢«åºåº«ï¼å°±ä¸è½æ´æ¹åªé¤ï¼
-                # é¿åç ´å£å¾çºè¨å®ã
+                # 如果這批序號後來已經被出庫，就不能整批刪除，
+                # 避免破壞後續訂單。
                 used_rows = [
                     row
                     for row in rows
@@ -2409,7 +2409,7 @@ def undo_last_action(
                 }
 
             # ------------------------------
-            # æ¤ååºåº«ï¼å®å / å¤åé é½æ´æ¹æ¤åï¼
+            # 撤回出庫（單品 / 多品項都整批撤回）
             # ------------------------------
             if action["action_type"] == "sale":
 
@@ -2550,18 +2550,18 @@ def undo_last_action(
 
 
 # ==================================================
-# æ¥æåéï¼é·è²¨ / é²è²¨æ¥è©¢
+# 日期區間：銷貨 / 進貨查詢
 # ==================================================
 
 def parse_query_date(value):
     """
-    æ¯æ´ï¼
+    支援：
     2026/10/1
     2026-10-01
     10/1
     10-01
 
-    åªææ/æ¥æï¼ä½¿ç¨å°ç£ç®åå¹´ä»½ã
+    只有月/日時，使用台灣目前年份。
     """
     raw = str(value or "").strip()
 
@@ -2589,7 +2589,7 @@ def parse_query_date(value):
         except ValueError:
             pass
 
-    raise ValueError("æ¥ææ ¼å¼é¯èª¤")
+    raise ValueError("日期格式錯誤")
 
 
 def get_sales_by_date_range(
@@ -2598,8 +2598,8 @@ def get_sales_by_date_range(
     end_date,
 ):
     """
-    æ¥ç®åç¾¤çµ/èå¤©å®¤æå®æ¥æåéçé·è²¨ã
-    èµ·è¨æ¥é½åå«ã
+    查目前群組/聊天室指定日期區間的銷貨。
+    起訖日都包含。
     """
     conn = get_db()
 
@@ -2686,9 +2686,9 @@ def get_stock_in_by_date_range(
     end_date,
 ):
     """
-    æ¥ç®åç¾¤çµ/èå¤©å®¤æå®æ¥æåéçé²è²¨ã
-    ä»¥ stock_actions çå¥åº«åä½ + serials.batch_no è¨ç®ï¼
-    å·²æ¤åçå¥åº«ä¸è¨ã
+    查目前群組/聊天室指定日期區間的進貨。
+    以 stock_actions 的入庫動作 + serials.batch_no 計算，
+    已撤回的入庫不計。
     """
     conn = get_db()
 
@@ -2774,14 +2774,14 @@ def format_query_date(value):
 
 def parse_date_range_command(text, command_names):
     """
-    æ¯æ´ï¼
-    /æ¥é·è²¨ 10/1 10/7
-    /æ¥é·è²¨ 10/1~10/7
-    /æ¥é·è²¨ 10/1ï½10/7
-    /æ¥é·è²¨ 10/1 å° 10/7
-    /æ¥é·è²¨ 10/7       -> æ¥å®æ¥
+    支援：
+    /查銷貨 10/1 10/7
+    /查銷貨 10/1~10/7
+    /查銷貨 10/1～10/7
+    /查銷貨 10/1 到 10/7
+    /查銷貨 10/7       -> 查單日
 
-    command_names å³å¥å»æ / ä¹å¾çæä»¤åç¨±ã
+    command_names 傳入去掉 / 之後的指令名稱。
     """
     matched_name = None
 
@@ -2803,13 +2803,13 @@ def parse_date_range_command(text, command_names):
 
     normalized = (
         body
-        .replace("ï½", "~")
-        .replace("ï¼", "-")
-        .replace(" å° ", "~")
-        .replace("è³", "~")
+        .replace("～", "~")
+        .replace("－", "-")
+        .replace(" 到 ", "~")
+        .replace("至", "~")
     )
 
-    # åèçãæ¥æ~æ¥æã
+    # 先處理「日期~日期」
     if "~" in normalized:
         parts = [
             p.strip()
@@ -2818,7 +2818,7 @@ def parse_date_range_command(text, command_names):
     else:
         parts = normalized.split()
 
-        # å®ä¸æ¥æ = æ¥ç¶å¤©
+        # 單一日期 = 查當天
         if len(parts) == 1:
             parts = [parts[0], parts[0]]
 
@@ -2852,8 +2852,8 @@ def parse_date_range_command(text, command_names):
 
 
 # ==================================================
-# Supabaseï¼ä»æ¥é·å®
-# ä»¥ç®å LINE ç¾¤çµ / èå¤©å®¤çºä¸»
+# Supabase：今日銷售
+# 以目前 LINE 群組 / 聊天室為主
 # ==================================================
 
 def get_today_sales(context_id):
@@ -2930,7 +2930,7 @@ def get_today_sales(context_id):
 
 
 # ==================================================
-# Supabaseï¼æ¥è¨å®
+# Supabase：查訂單
 # ==================================================
 
 def get_order(order_no):
@@ -2990,7 +2990,7 @@ def get_order(order_no):
 
 
 # ==================================================
-# ç¶²ç«å¥åº·æª¢æ¥
+# 網站健康檢查
 # ==================================================
 
 @app.route("/", methods=["GET"])
@@ -3027,7 +3027,7 @@ def callback():
 
 
 # ==================================================
-# LINE æä»¤
+# LINE 指令
 # ==================================================
 
 @handler.add(
@@ -3039,14 +3039,14 @@ def handle_message(event):
     original_raw_text = event.message.text
     original_text = original_raw_text.strip()
 
-    # æææ©å¨äººæä»¤é½å¿é ä»¥ / éé ­ã
-    # ä¸è¬èå¤©æ²æ /ï¼æ©å¨äººå®å¨ä¸åæã
+    # 所有機器人指令都必須以 / 開頭。
+    # 一般聊天沒有 /，機器人完全不回應。
     if not original_text.startswith("/"):
         return
 
-    # èææä»¤èçéè¼¯ç¶­æä¸è®ï¼
-    # åªç§»é¤æ´åè¨æ¯ãç¬¬ä¸åæä»¤éé ­ãç /ã
-    # å¥åº«å¾é¢çåºèå§å®¹ä¸æè¢«ä¿®æ¹ã
+    # 舊有指令處理邏輯維持不變：
+    # 只移除整則訊息「第一個指令開頭」的 /。
+    # 入庫後面的序號內容不會被修改。
     leading_ws_len = len(original_raw_text) - len(original_raw_text.lstrip())
     raw_text = (
         original_raw_text[:leading_ws_len]
@@ -3060,40 +3060,40 @@ def handle_message(event):
     try:
 
         # ------------------------------------------
-        # æ¥èªå·±ç LINE User ID
-        # éåæä»¤ä¸éè¦æ¬éï¼æ¹ä¾¿è¨­å®ç½åå®
+        # 查自己的 LINE User ID
+        # 這個指令不需要權限，方便設定白名單
         # ------------------------------------------
 
-        if text == "æçID":
+        if text == "我的ID":
             reply(
                 event,
-                f"ä½ ç LINE User IDï¼\n{operator}"
+                f"你的 LINE User ID：\n{operator}"
             )
             return
 
         # ------------------------------------------
-        # ç®¡çå¡å°ç¨ï¼å æ¬é
-        # å æ¬é Uxxxxxxxx
+        # 管理員專用：加權限
+        # 加權限 Uxxxxxxxx
         # ------------------------------------------
 
-        if text.startswith("å æ¬é "):
+        if text.startswith("加權限 "):
 
             if not is_admin(operator):
                 reply(
                     event,
-                    "â åªæç®¡çå¡å¯ä»¥æ°å¢æ¬é"
+                    "⛔ 只有管理員可以新增權限"
                 )
                 return
 
             target_id = (
-                text[len("å æ¬é "):]
+                text[len("加權限 "):]
                 .strip()
             )
 
             if not target_id:
                 reply(
                     event,
-                    "æ ¼å¼ï¼/å æ¬é LINE_USER_ID"
+                    "格式：/加權限 LINE_USER_ID"
                 )
                 return
 
@@ -3103,35 +3103,35 @@ def handle_message(event):
 
             reply(
                 event,
-                f"â å·²æ°å¢æ¬é\n"
+                f"✅ 已新增權限\n"
                 f"{target_id}"
             )
             return
 
 
         # ------------------------------------------
-        # ç®¡çå¡å°ç¨ï¼åªæ¬é
-        # åªæ¬é Uxxxxxxxx
+        # 管理員專用：刪權限
+        # 刪權限 Uxxxxxxxx
         # ------------------------------------------
 
-        if text.startswith("åªæ¬é "):
+        if text.startswith("刪權限 "):
 
             if not is_admin(operator):
                 reply(
                     event,
-                    "â åªæç®¡çå¡å¯ä»¥åªé¤æ¬é"
+                    "⛔ 只有管理員可以刪除權限"
                 )
                 return
 
             target_id = (
-                text[len("åªæ¬é "):]
+                text[len("刪權限 "):]
                 .strip()
             )
 
             if not target_id:
                 reply(
                     event,
-                    "æ ¼å¼ï¼/åªæ¬é LINE_USER_ID"
+                    "格式：/刪權限 LINE_USER_ID"
                 )
                 return
 
@@ -3142,35 +3142,35 @@ def handle_message(event):
             if removed:
                 reply(
                     event,
-                    f"â å·²åªé¤æ¬é\n"
+                    f"✅ 已刪除權限\n"
                     f"{target_id}"
                 )
             else:
                 reply(
                     event,
-                    f"â ï¸ æ¾ä¸å°åç¨ä¸­çæ¬é\n"
+                    f"⚠️ 找不到啟用中的權限\n"
                     f"{target_id}"
                 )
             return
 
 
         # ------------------------------------------
-        # ç®¡çå¡å°ç¨ï¼æ¬éåå®
+        # 管理員專用：權限名單
         # ------------------------------------------
 
-        if text == "æ¬éåå®":
+        if text == "權限名單":
 
             if not is_admin(operator):
                 reply(
                     event,
-                    "â åªæç®¡çå¡å¯ä»¥æ¥çæ¬éåå®"
+                    "⛔ 只有管理員可以查看權限名單"
                 )
                 return
 
             users = get_authorized_users()
 
             lines = [
-                "ð ç®¡çå¡",
+                "👑 管理員",
             ]
 
             if ADMIN_LINE_USER_IDS:
@@ -3182,12 +3182,12 @@ def handle_message(event):
                     )
             else:
                 lines.append(
-                    "ï¼å°æªè¨­å®ï¼"
+                    "（尚未設定）"
                 )
 
             lines.append("")
             lines.append(
-                "ð¤ ä¸è¬ä½¿ç¨è"
+                "👤 一般使用者"
             )
 
             if users:
@@ -3197,7 +3197,7 @@ def handle_message(event):
                     )
             else:
                 lines.append(
-                    "ï¼ç®åæ²æï¼"
+                    "（目前沒有）"
                 )
 
             reply(
@@ -3208,34 +3208,34 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # ä¸è¬æä½æ¬éæª¢æ¥
-        # ç®¡çå¡æ authorized_users æè½ä½¿ç¨
+        # 一般操作權限檢查
+        # 管理員或 authorized_users 才能使用
         # ------------------------------------------
 
         if not can_use_bot(operator):
             reply(
                 event,
-                "â ä½ æ²ææä½æ¬é\n"
-                "å¦éééï¼è«è¼¸å¥ã/æçIDã"
+                "⛔ 你沒有操作權限\n"
+                "如需開通，請輸入「/我的ID」"
             )
             return
 
         # ------------------------------------------
-        # æ¸¬è©¦
+        # 測試
         # ------------------------------------------
 
-        if text == "æ¸¬è©¦":
+        if text == "測試":
             reply(
                 event,
-                "æ¶å°ï¼æ©å¨äººæ­£å¸¸éä½"
+                "收到！機器人正常運作"
             )
             return
 
 
         # ------------------------------------------
-        # è¨å¸³
-        # /å°ç¾ +1900
-        # /å°ç¾ -1900
+        # 記帳
+        # /小美 +1900
+        # /小美 -1900
         # ------------------------------------------
 
         parts = text.split()
@@ -3261,14 +3261,14 @@ def handle_message(event):
                 except ValueError:
                     reply(
                         event,
-                        "â ï¸ éé¡æ ¼å¼ä¸æ­£ç¢º"
+                        "⚠️ 金額格式不正確"
                     )
                     return
 
                 account_type = (
-                    "å å¸³"
+                    "加帳"
                     if amount > 0
-                    else "æ¶æ¬¾"
+                    else "收款"
                 )
 
                 account_sheet.append_row([
@@ -3286,26 +3286,26 @@ def handle_message(event):
 
                 reply(
                     event,
-                    f"â å·²è¨å¸³\n"
-                    f"å®¢æ¶ï¼{customer}\n"
-                    f"æ¬æ¬¡ï¼{amount:+,}\n"
-                    f"ç®åé¤é¡ï¼{balance:,}"
+                    f"✅ 已記帳\n"
+                    f"客戶：{customer}\n"
+                    f"本次：{amount:+,}\n"
+                    f"目前餘額：{balance:,}"
                 )
                 return
 
 
         # ------------------------------------------
-        # æ¥å¸³
+        # 查帳
         # ------------------------------------------
 
-        if text.startswith("æ¥å¸³ "):
+        if text.startswith("查帳 "):
 
             customer = text[3:].strip()
 
             if not customer:
                 reply(
                     event,
-                    "è«è¼¸å¥å®¢æ¶åç¨±"
+                    "請輸入客戶名稱"
                 )
                 return
 
@@ -3315,35 +3315,35 @@ def handle_message(event):
 
             reply(
                 event,
-                f"ð¤ {customer}\n"
-                f"ç®åå¸³æ¬¾ï¼${balance:,}"
+                f"👤 {customer}\n"
+                f"目前帳款：${balance:,}"
             )
             return
 
 
         # ------------------------------------------
-        # å¨é¨åº«å­
+        # 全部庫存
         # ------------------------------------------
 
-        if text == "åº«å­":
+        if text == "庫存":
 
             rows = get_all_inventory()
 
             if not rows:
                 reply(
                     event,
-                    "ð¦ ç®åæ²æååè³æ"
+                    "📦 目前沒有商品資料"
                 )
                 return
 
             lines = [
-                "ð¦ ç®ååº«å­"
+                "📦 目前庫存"
             ]
 
             for row in rows:
                 lines.append(
-                    f"{row['code']}ï¼"
-                    f"{row['stock']} å¼µ"
+                    f"{row['code']}："
+                    f"{row['stock']} 張"
                 )
 
             reply(
@@ -3354,17 +3354,17 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # æ¥å®ä¸åååº«å­
+        # 查單一商品庫存
         #
-        # æ¥åº«å­ TEST100
-        # æ¥åº«å­ test100
-        # å©èè¦çºç¸ååå
+        # 查庫存 TEST100
+        # 查庫存 test100
+        # 兩者視為相同商品
         # ------------------------------------------
 
-        if text.startswith("æ¥åº«å­ "):
+        if text.startswith("查庫存 "):
 
             product_text = (
-                text[len("æ¥åº«å­ "):]
+                text[len("查庫存 "):]
                 .strip()
             )
 
@@ -3377,30 +3377,30 @@ def handle_message(event):
             if not product:
                 reply(
                     event,
-                    f"â ï¸ æ¾ä¸å°ååï¼"
+                    f"⚠️ 找不到商品："
                     f"{product_text}"
                 )
                 return
 
             reply(
                 event,
-                f"ð¦ {product['code']}\n"
+                f"📦 {product['code']}\n"
                 f"{product['name']}\n"
-                f"ç®ååº«å­ï¼{count} å¼µ"
+                f"目前庫存：{count} 張"
             )
             return
 
 
         # ------------------------------------------
-        # å¥åº«
+        # 入庫
         #
-        # /å¥åº« test100
+        # /入庫 test100
         # Abc001xY
         # TEST-002
         # 120 556 AA
         # ------------------------------------------
 
-        if text.startswith("å¥åº« "):
+        if text.startswith("入庫 "):
 
             raw_lines = raw_text.splitlines()
 
@@ -3410,7 +3410,7 @@ def handle_message(event):
             )
 
             product_text = (
-                first_line[len("å¥åº« "):]
+                first_line[len("入庫 "):]
                 .strip()
             )
 
@@ -3426,12 +3426,12 @@ def handle_message(event):
             ):
                 reply(
                     event,
-                    "æ ¼å¼ï¼\n"
-                    "/å¥åº« åå\n"
-                    "åºè1\n"
-                    "åºè2\n\n"
-                    "ä¾å¦ï¼\n"
-                    "/å¥åº« test100\n"
+                    "格式：\n"
+                    "/入庫 商品\n"
+                    "序號1\n"
+                    "序號2\n\n"
+                    "例如：\n"
+                    "/入庫 test100\n"
                     "ABC001\n"
                     "120 556 AA"
                 )
@@ -3452,28 +3452,28 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        f"â ï¸ æ¾ä¸å°ååï¼"
+                        f"⚠️ 找不到商品："
                         f"{product_text}"
                     )
                     return
 
             reply(
                 event,
-                f"â å¥åº«å®æ\n"
+                f"✅ 入庫完成\n"
                 f"{result['product']['code']}\n"
-                f"æ°å¢ï¼{len(result['added'])} å¼µ\n"
-                f"éè¤ï¼{len(result['duplicates'])} å¼µ\n"
-                f"ç®ååº«å­ï¼{result['stock']} å¼µ"
+                f"新增：{len(result['added'])} 張\n"
+                f"重複：{len(result['duplicates'])} 張\n"
+                f"目前庫存：{result['stock']} 張"
             )
             return
 
 
         # ------------------------------------------
-        # /æ´çï¼æãåºè1 / å¯ç¢¼1ãæ´çæåä¸è¡
-        # /éï¼æå©æ¬ç©ºç½æ¹æéè
+        # /整理：把「序號1 / 密碼1」整理成同一行
+        # /逗：把兩欄空白改成逗號
         # ------------------------------------------
 
-        if text == "æ´ç" or text.startswith("æ´ç\n"):
+        if text == "整理" or text.startswith("整理\n"):
 
             result = format_labeled_pairs(
                 original_raw_text
@@ -3482,15 +3482,15 @@ def handle_message(event):
             if not result["ok"]:
 
                 if result["reason"] == "missing_pair":
-                    nums = "ã".join(
+                    nums = "、".join(
                         str(n)
                         for n in result["numbers"]
                     )
 
-                    if nums in ("åä¸çµ", "æå¾ä¸çµ"):
-                        msg = f"â ï¸ {nums}çåºèæå¯ç¢¼ä¸å®æ´"
+                    if nums in ("前一組", "最後一組"):
+                        msg = f"⚠️ {nums}的序號或密碼不完整"
                     else:
-                        msg = f"â ï¸ ç¬¬ {nums} çµçåºèæå¯ç¢¼ä¸å®æ´"
+                        msg = f"⚠️ 第 {nums} 組的序號或密碼不完整"
 
                     reply(
                         event,
@@ -3500,11 +3500,11 @@ def handle_message(event):
 
                 reply(
                     event,
-                    "â ï¸ æ²ææ¾å°å¯æ´ççåºè/å¯ç¢¼\n\n"
-                    "æ ¼å¼ä¾å¦ï¼\n"
-                    "/æ´ç\n"
-                    "åºè1: MFXMTA003786\n"
-                    "å¯ç¢¼1: LFC6M8G3DF8G"
+                    "⚠️ 沒有找到可整理的序號/密碼\n\n"
+                    "格式例如：\n"
+                    "/整理\n"
+                    "序號1: MFXMTA003786\n"
+                    "密碼1: LFC6M8G3DF8G"
                 )
                 return
 
@@ -3514,7 +3514,7 @@ def handle_message(event):
             )
             return
 
-        if text == "é" or text.startswith("é\n"):
+        if text == "逗" or text.startswith("逗\n"):
 
             result = add_comma_between_columns(
                 original_raw_text
@@ -3526,12 +3526,12 @@ def handle_message(event):
 
                 reply(
                     event,
-                    "â ï¸ /é éè¦æ¯è¡æå©æ¬è³æ\n\n"
-                    "ä¾å¦ï¼\n"
-                    "/é\n"
+                    "⚠️ /逗 需要每行有兩欄資料\n\n"
+                    "例如：\n"
+                    "/逗\n"
                     "MFXMTA003797    GP3TX8F8QTUV"
                     + (
-                        f"\n\nçä¸æéè¡ï¼{bad_line}"
+                        f"\n\n看不懂這行：{bad_line}"
                         if bad_line
                         else ""
                     )
@@ -3546,14 +3546,14 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # è¶å¿«éåºåº«ï¼å¯å®åï¼ä¹å¯ä¸æ¬¡å¤åé ï¼
+        # 超快速出庫（可單品，也可一次多品項）
         #
-        # /å¤§10
-        # /å¤§*10
-        # /å°20
+        # /大10
+        # /大*10
+        # /小20
         # /1490*60
         #
-        # å¤è¡ä¸èµ·è²¼ = åä¸ç­åºåº«
+        # 多行一起貼 = 同一筆出庫
         # ------------------------------------------
 
         quick_sale = parse_quick_sale_message(
@@ -3570,7 +3570,7 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        "â ï¸ å®ä¸ååä¸æ¬¡æå¤ 500 å¼µ"
+                        "⚠️ 單一商品一次最多 500 張"
                     )
                     return
 
@@ -3580,16 +3580,16 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        "â ï¸ ä¸æ¬¡å¿«éåºåº«ç¸½æ¸æå¤ 500 å¼µ"
+                        "⚠️ 一次快速出庫總數最多 500 張"
                     )
                     return
 
                 reply(
                     event,
-                    "â ï¸ å¿«éåºåº«æ ¼å¼çä¸æ\n\n"
-                    "ä¾å¦ï¼\n"
-                    "/å¤§10\n"
-                    "/å°*20\n"
+                    "⚠️ 快速出庫格式看不懂\n\n"
+                    "例如：\n"
+                    "/大10\n"
+                    "/小*20\n"
                     "/1490*60"
                 )
                 return
@@ -3609,7 +3609,7 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        f"â ï¸ æ¾ä¸å°ååï¼"
+                        f"⚠️ 找不到商品："
                         f"{result['product_text']}"
                     )
                     return
@@ -3620,12 +3620,12 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        f"â ï¸ "
+                        f"⚠️ "
                         f"{result['product']['code']} "
-                        f"åº«å­ä¸è¶³\n"
-                        f"éè¦ï¼{result['requested']} å¼µ\n"
-                        f"ç®åå¯ç¨ï¼{result['available']} å¼µ\n\n"
-                        f"æ´ç­æ²æåºåº«ã"
+                        f"庫存不足\n"
+                        f"需要：{result['requested']} 張\n"
+                        f"目前可用：{result['available']} 張\n\n"
+                        f"整筆沒有出庫。"
                     )
                     return
 
@@ -3635,9 +3635,9 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        "â ï¸ éæ¬¡åºèå§å®¹å¤ªé·ï¼"
-                        "LINE ä¸æ¬¡ç¡æ³å®æ´åå³ã\n"
-                        "æ´ç­æ²æåºåº«ï¼è«ææå©æ¬¡ã"
+                        "⚠️ 這次序號內容太長，"
+                        "LINE 一次無法完整回傳。\n"
+                        "整筆沒有出庫，請拆成兩次。"
                     )
                     return
 
@@ -3647,25 +3647,25 @@ def handle_message(event):
             )
 
             summary_lines = [
-                "â åºåº«å®æ",
+                "✅ 出庫完成",
                 "",
             ]
 
             for item in result["items"]:
                 summary_lines.append(
-                    f"{item['product']['code']} Ã "
+                    f"{item['product']['code']} × "
                     f"{item['quantity']}"
                 )
 
             summary_lines.extend([
                 "",
-                f"ï¼è¨å®ç·¨è{result['sale_batch_no']}ï¼",
+                f"（訂單編號{result['sale_batch_no']}）",
             ])
 
             if not sheet_sync_ok:
                 summary_lines.extend([
                     "",
-                    "â ï¸ é·å®ç´éæ«ææªå¯«å¥ Google Sheet",
+                    "⚠️ 銷售紀錄暫時未寫入 Google Sheet",
                 ])
 
             messages = list(
@@ -3684,27 +3684,27 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # åºåº« / ç¼åºè
+        # 出庫 / 發序號
         #
-        # å¿«éæ ¼å¼ï¼
-        # /åºå¤§å¡*10
-        # /ç¼å¤§å¡*10
+        # 快速格式：
+        # /出大卡*10
+        # /發大卡*10
         #
-        # ä¹ä¿çåæ¬æ ¼å¼ï¼
-        # /ç¼ å°ç¾ å¤§å¡ 10
-        # ç¼ å¤§å¡*10
+        # 也保留原本格式：
+        # /發 小美 大卡 10
+        # 發 大卡*10
         # ------------------------------------------
 
         quick_prefix = None
 
-        if text.startswith("/åº"):
-            quick_prefix = "/åº"
-        elif text.startswith("/ç¼"):
-            quick_prefix = "/ç¼"
+        if text.startswith("/出"):
+            quick_prefix = "/出"
+        elif text.startswith("/發"):
+            quick_prefix = "/發"
 
         if (
             quick_prefix
-            or text.startswith("ç¼ ")
+            or text.startswith("發 ")
         ):
 
             customer = ""
@@ -3712,9 +3712,9 @@ def handle_message(event):
             quantity = None
 
             # ------------------------------
-            # æ°å¿«éæ ¼å¼ï¼
-            # /åºå¤§å¡*10
-            # /ç¼å¤§å¡*10
+            # 新快速格式：
+            # /出大卡*10
+            # /發大卡*10
             # ------------------------------
             if quick_prefix:
 
@@ -3723,12 +3723,12 @@ def handle_message(event):
                 if "*" not in body:
                     reply(
                         event,
-                        "æ ¼å¼ï¼\n"
-                        "/åºç¢å*æ¸é\n"
-                        "/ç¼ç¢å*æ¸é\n\n"
-                        "ä¾å¦ï¼\n"
-                        "/åºå¤§å¡*10\n"
-                        "/ç¼å¤§å¡*10"
+                        "格式：\n"
+                        "/出產品*數量\n"
+                        "/發產品*數量\n\n"
+                        "例如：\n"
+                        "/出大卡*10\n"
+                        "/發大卡*10"
                     )
                     return
 
@@ -3743,29 +3743,29 @@ def handle_message(event):
                 except ValueError:
                     reply(
                         event,
-                        "â ï¸ æ¸éå¿é æ¯æ¸å­\n"
-                        "ä¾å¦ï¼/åºå¤§å¡*10"
+                        "⚠️ 數量必須是數字\n"
+                        "例如：/出大卡*10"
                     )
                     return
 
                 if not product_text:
                     reply(
                         event,
-                        "â ï¸ è«è¼¸å¥åå\n"
-                        "ä¾å¦ï¼/åºå¤§å¡*10"
+                        "⚠️ 請輸入商品\n"
+                        "例如：/出大卡*10"
                     )
                     return
 
             # ------------------------------
-            # åæ¬æ ¼å¼ï¼
-            # ç¼ å¤§å¡*10
-            # /ç¼ å°ç¾ å¤§å¡ 10
+            # 原本格式：
+            # 發 大卡*10
+            # /發 小美 大卡 10
             # ------------------------------
             else:
 
-                body = text[len("ç¼ "):].strip()
+                body = text[len("發 "):].strip()
 
-                # ç¼ å¤§å¡*10
+                # 發 大卡*10
                 if "*" in body:
 
                     left, right = body.rsplit("*", 1)
@@ -3779,20 +3779,20 @@ def handle_message(event):
                     except ValueError:
                         reply(
                             event,
-                            "â ï¸ æ¸éå¿é æ¯æ¸å­\n"
-                            "ä¾å¦ï¼/ç¼ å¤§å¡*10"
+                            "⚠️ 數量必須是數字\n"
+                            "例如：/發 大卡*10"
                         )
                         return
 
                     if not product_text:
                         reply(
                             event,
-                            "â ï¸ è«è¼¸å¥åå\n"
-                            "ä¾å¦ï¼/ç¼ å¤§å¡*10"
+                            "⚠️ 請輸入商品\n"
+                            "例如：/發 大卡*10"
                         )
                         return
 
-                # /ç¼ å°ç¾ å¤§å¡ 10
+                # /發 小美 大卡 10
                 else:
 
                     parts = body.split()
@@ -3800,12 +3800,12 @@ def handle_message(event):
                     if len(parts) != 3:
                         reply(
                             event,
-                            "æ ¼å¼ï¼\n"
-                            "/ç¼ å®¢æ¶ åå æ¸é\n"
-                            "ä¾å¦ï¼/ç¼ å°ç¾ å¤§å¡ 10\n\n"
-                            "å¿«éæ ¼å¼ï¼\n"
-                            "/åºå¤§å¡*10\n"
-                            "/ç¼å¤§å¡*10"
+                            "格式：\n"
+                            "/發 客戶 商品 數量\n"
+                            "例如：/發 小美 大卡 10\n\n"
+                            "快速格式：\n"
+                            "/出大卡*10\n"
+                            "/發大卡*10"
                         )
                         return
 
@@ -3819,7 +3819,7 @@ def handle_message(event):
                     except ValueError:
                         reply(
                             event,
-                            "â ï¸ æ¸éå¿é æ¯æ¸å­"
+                            "⚠️ 數量必須是數字"
                         )
                         return
 
@@ -3829,7 +3829,7 @@ def handle_message(event):
             ):
                 reply(
                     event,
-                    "â ï¸ ä¸æ¬¡ç¼éæ¸ééçº 1ï½20"
+                    "⚠️ 一次發送數量需為 1～20"
                 )
                 return
 
@@ -3849,7 +3849,7 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        f"â ï¸ æ¾ä¸å°ååï¼"
+                        f"⚠️ 找不到商品："
                         f"{product_text}"
                     )
                     return
@@ -3860,11 +3860,11 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        f"â ï¸ "
+                        f"⚠️ "
                         f"{result['product']['code']} "
-                        f"åº«å­ä¸è¶³\n"
-                        f"ç®åå¯ç¨ï¼"
-                        f"{result['available']} å¼µ"
+                        f"庫存不足\n"
+                        f"目前可用："
+                        f"{result['available']} 張"
                     )
                     return
 
@@ -3885,12 +3885,12 @@ def handle_message(event):
 
             if customer:
                 summary_line = (
-                    f"{result['product']['code']} Ã {quantity}  "
-                    f"â¡ï¸ã{customer}ã"
+                    f"{result['product']['code']} × {quantity}  "
+                    f"➡️《{customer}》"
                 )
             else:
                 summary_line = (
-                    f"{result['product']['code']} Ã {quantity}"
+                    f"{result['product']['code']} × {quantity}"
                 )
 
             reply_messages(
@@ -3898,11 +3898,11 @@ def handle_message(event):
                 [
                     serial_text,
                     (
-                        f"â å·²åºåº«\n"
+                        f"✅ 已出庫\n"
                         f"{summary_line}\n"
-                        f"ï¼è¨å®ç·¨è{result['order_no']}ï¼"
+                        f"（訂單編號{result['order_no']}）"
                         + (
-                            "\nâ ï¸ é·å®ç´éæ«ææªå¯«å¥ Google Sheet"
+                            "\n⚠️ 銷售紀錄暫時未寫入 Google Sheet"
                             if not sheet_sync_ok
                             else ""
                         )
@@ -3913,13 +3913,13 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # æ¤å
+        # 撤回
         #
-        # æ¤åéåç¾¤çµ / èå¤©å®¤çä¸ä¸ç­åº«å­åä½
-        # ä¸ç®¡ä¸ä¸ç­æ¯å¥åº«æåºåº«
+        # 撤回這個群組 / 聊天室的上一筆庫存動作
+        # 不管上一筆是入庫或出庫
         # ------------------------------------------
 
-        if text == "æ¤å":
+        if text == "撤回":
 
             result = undo_last_action(
                 context_id,
@@ -3934,7 +3934,7 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        "â ï¸ éåç¾¤çµç®åæ²æå¯æ¤åçä¸ä¸ç­åä½"
+                        "⚠️ 這個群組目前沒有可撤回的上一筆動作"
                     )
                     return
 
@@ -3944,9 +3944,9 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        "â ï¸ æ¾ä¸å°éæ¬¡å¥åº«çåºèè³æï¼"
-                        "æä»¥ç³»çµ±æ²æåªé¤ä»»ä½åº«å­ã\n"
-                        "è«æéåç«é¢æªåçµ¦ç®¡çå¡ã"
+                        "⚠️ 找不到這次入庫的序號資料，"
+                        "所以系統沒有刪除任何庫存。\n"
+                        "請把這個畫面截圖給管理員。"
                     )
                     return
 
@@ -3956,15 +3956,15 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        "â ï¸ ç¡æ³æ¤åéæ¬¡å¥åº«\n"
-                        "éä¸æ¹è£¡å·²æåºèè¢«åºåº«ï¼"
-                        "çºé¿åç ´å£è¨å®ï¼ç³»çµ±æ²æåªé¤ã"
+                        "⚠️ 無法撤回這次入庫\n"
+                        "這一批裡已有序號被出庫，"
+                        "為避免破壞訂單，系統沒有刪除。"
                     )
                     return
 
                 reply(
                     event,
-                    "â ï¸ éç­åä½ç®åç¡æ³æ¤å"
+                    "⚠️ 這筆動作目前無法撤回"
                 )
                 return
 
@@ -3974,10 +3974,10 @@ def handle_message(event):
             ):
                 reply(
                     event,
-                    f"â©ï¸ å·²æ¤åä¸ä¸ç­å¥åº«\n"
-                    f"{result['product']['code']} Ã "
-                    f"{result['quantity']} å¼µ\n"
-                    f"ï¼æ¹æ¬¡ç·¨è{result['ref_no']}ï¼"
+                    f"↩️ 已撤回上一筆入庫\n"
+                    f"{result['product']['code']} × "
+                    f"{result['quantity']} 張\n"
+                    f"（批次編號{result['ref_no']}）"
                 )
                 return
 
@@ -3993,12 +3993,12 @@ def handle_message(event):
                 )
 
                 lines = [
-                    "â©ï¸ å·²æ¤åä¸ä¸ç­åºåº«",
+                    "↩️ 已撤回上一筆出庫",
                 ]
 
                 for item in result["items"]:
                     lines.append(
-                        f"{item['product']['code']} Ã "
+                        f"{item['product']['code']} × "
                         f"{item['quantity']}"
                     )
 
@@ -4010,16 +4010,16 @@ def handle_message(event):
 
                 if sold_to_values:
                     lines.append(
-                        f"åå®¢æ¶ï¼ã{sold_to_values[0]}ã"
+                        f"原客戶：《{sold_to_values[0]}》"
                     )
 
                 lines.append(
-                    f"ï¼è¨å®ç·¨è{result['ref_no']}ï¼"
+                    f"（訂單編號{result['ref_no']}）"
                 )
 
                 if not sheet_undo_ok:
                     lines.append(
-                        "â ï¸ Google Sheet å°æªæ¨è¨æ¤å"
+                        "⚠️ Google Sheet 尚未標記撤回"
                     )
 
                 reply(
@@ -4030,20 +4030,20 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # è£ä¸ä¸å® å®¢æ¶
+        # 補上一單 客戶
         # ------------------------------------------
 
-        if text.startswith("è£ä¸ä¸å® "):
+        if text.startswith("補上一單 "):
 
             customer = (
-                text[len("è£ä¸ä¸å® "):]
+                text[len("補上一單 "):]
                 .strip()
             )
 
             if not customer:
                 reply(
                     event,
-                    "æ ¼å¼ï¼/è£ä¸ä¸å® å®¢æ¶å"
+                    "格式：/補上一單 客戶名"
                 )
                 return
 
@@ -4057,35 +4057,35 @@ def handle_message(event):
                 if result["reason"] == "no_blank_order":
                     reply(
                         event,
-                        "â ï¸ ç®åéåç¾¤çµæ²æå¯è£å®¢æ¶çè¨å®"
+                        "⚠️ 目前這個群組沒有可補客戶的訂單"
                     )
                     return
 
                 reply(
                     event,
-                    "â ï¸ æ¾ä¸å°å¯è£çè¨å®"
+                    "⚠️ 找不到可補的訂單"
                 )
                 return
 
             lines = [
-                "â è£å®å®æ",
-                f"å®¢æ¶ï¼{customer}",
+                "✅ 補單完成",
+                f"客戶：{customer}",
                 "",
             ]
 
             for order in result["orders"]:
                 lines.append(
-                    f"{order['code']} Ã {order['quantity']}"
+                    f"{order['code']} × {order['quantity']}"
                 )
 
             lines.extend([
                 "",
-                f"ï¼è¨å®ç·¨è{result['batch_no']}ï¼",
+                f"（訂單編號{result['batch_no']}）",
             ])
 
             if not result["sheet_ok"]:
                 lines.append(
-                    "â ï¸ Google Sheet å®¢æ¶æ¬æ«ææªæ´æ°"
+                    "⚠️ Google Sheet 客戶欄暫時未更新"
                 )
 
             reply(
@@ -4096,17 +4096,17 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # è£å® è¨å®ç·¨è å®¢æ¶
+        # 補單 訂單編號 客戶
         # ------------------------------------------
 
-        if text.startswith("è£å® "):
+        if text.startswith("補單 "):
 
             parts = text.split(maxsplit=2)
 
             if len(parts) != 3:
                 reply(
                     event,
-                    "æ ¼å¼ï¼/è£å® è¨å®ç·¨è å®¢æ¶å"
+                    "格式：/補單 訂單編號 客戶名"
                 )
                 return
 
@@ -4124,58 +4124,58 @@ def handle_message(event):
                 if result["reason"] == "order_not_found":
                     reply(
                         event,
-                        f"â ï¸ æ¾ä¸å°è¨å®ï¼{order_no}"
+                        f"⚠️ 找不到訂單：{order_no}"
                     )
                     return
 
                 if result["reason"] == "wrong_context":
                     reply(
                         event,
-                        "â ï¸ éç­è¨å®ä¸å±¬æ¼ç®åéåç¾¤çµ"
+                        "⚠️ 這筆訂單不屬於目前這個群組"
                     )
                     return
 
                 if result["reason"] == "already_has_customer":
-                    current = "ã".join(
+                    current = "、".join(
                         result.get("customers", [])
                     )
                     reply(
                         event,
-                        "â ï¸ éç­è¨å®å·²ç¶æå®¢æ¶"
+                        "⚠️ 這筆訂單已經有客戶"
                         + (
-                            f"ï¼{current}"
+                            f"：{current}"
                             if current
                             else ""
                         )
-                        + "\nè£å®ä¸æç´æ¥è¦èã"
+                        + "\n補單不會直接覆蓋。"
                     )
                     return
 
                 reply(
                     event,
-                    "â ï¸ ç¡æ³è£éç­è¨å®"
+                    "⚠️ 無法補這筆訂單"
                 )
                 return
 
             lines = [
-                "â è£å®å®æ",
-                f"å®¢æ¶ï¼{customer}",
+                "✅ 補單完成",
+                f"客戶：{customer}",
                 "",
             ]
 
             for order in result["orders"]:
                 lines.append(
-                    f"{order['code']} Ã {order['quantity']}"
+                    f"{order['code']} × {order['quantity']}"
                 )
 
             lines.extend([
                 "",
-                f"ï¼è¨å®ç·¨è{result['batch_no']}ï¼",
+                f"（訂單編號{result['batch_no']}）",
             ])
 
             if not result["sheet_ok"]:
                 lines.append(
-                    "â ï¸ Google Sheet å®¢æ¶æ¬æ«ææªæ´æ°"
+                    "⚠️ Google Sheet 客戶欄暫時未更新"
                 )
 
             reply(
@@ -4186,11 +4186,11 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # åæ­¥è£å®
-        # Google Sheetãé·å®ç´éã -> Supabase
+        # 同步補單
+        # Google Sheet「銷售紀錄」 -> Supabase
         # ------------------------------------------
 
-        if text == "åæ­¥è£å®":
+        if text == "同步補單":
 
             result = sync_sales_sheet_to_supabase()
 
@@ -4202,8 +4202,8 @@ def handle_message(event):
                 ):
                     reply(
                         event,
-                        "â ï¸ é·å®ç´éç¼ºå°æ¬ä½ï¼\n"
-                        + "ã".join(
+                        "⚠️ 銷售紀錄缺少欄位：\n"
+                        + "、".join(
                             result["missing_headers"]
                         )
                     )
@@ -4211,39 +4211,39 @@ def handle_message(event):
 
                 reply(
                     event,
-                    "â ï¸ åæ­¥è£å®å¤±æ"
+                    "⚠️ 同步補單失敗"
                 )
                 return
 
             lines = [
-                "â åæ­¥è£å®å®æ",
-                f"æè®æ´ï¼{result['updated']} ç­",
-                f"ç¡è®æ´ï¼{result['unchanged']} ç­",
+                "✅ 同步補單完成",
+                f"有變更：{result['updated']} 筆",
+                f"無變更：{result['unchanged']} 筆",
             ]
 
             if result["skipped_undone"]:
                 lines.append(
-                    f"å·²æ¤åè·³éï¼"
-                    f"{result['skipped_undone']} ç­"
+                    f"已撤回跳過："
+                    f"{result['skipped_undone']} 筆"
                 )
 
             if result["not_found"]:
                 lines.append(
-                    f"æ¾ä¸å°è¨å®ï¼"
-                    f"{result['not_found']} ç­"
+                    f"找不到訂單："
+                    f"{result['not_found']} 筆"
                 )
 
             if result["invalid"]:
                 lines.append("")
-                lines.append("â ï¸ éè¦æª¢æ¥ï¼")
+                lines.append("⚠️ 需要檢查：")
                 lines.extend(
                     result["invalid"][:10]
                 )
 
                 if len(result["invalid"]) > 10:
                     lines.append(
-                        f"...å¦å¤éæ "
-                        f"{len(result['invalid']) - 10} ç­"
+                        f"...另外還有 "
+                        f"{len(result['invalid']) - 10} 筆"
                     )
 
             reply(
@@ -4254,22 +4254,22 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # æ¥æ¥æåéé·è²¨
+        # 查日期區間銷貨
         #
-        # æ¯æ´ï¼
-        # /æ¥é·è²¨ 10/1 10/7
-        # /æ¥åéé·è²¨ 10/1~10/7
-        # /åéé·è²¨ 10/7
-        # /é·è²¨ 10/1 10/7
+        # 支援：
+        # /查銷貨 10/1 10/7
+        # /查區間銷貨 10/1~10/7
+        # /區間銷貨 10/7
+        # /銷貨 10/1 10/7
         # ------------------------------------------
 
         sales_range = parse_date_range_command(
             text,
             (
-                "æ¥é·è²¨",
-                "æ¥åéé·è²¨",
-                "åéé·è²¨",
-                "é·è²¨",
+                "查銷貨",
+                "查區間銷貨",
+                "區間銷貨",
+                "銷貨",
             ),
         )
 
@@ -4280,18 +4280,18 @@ def handle_message(event):
                 if sales_range["reason"] == "reverse":
                     reply(
                         event,
-                        "â ï¸ éå§æ¥æä¸è½ææ¼çµææ¥æ"
+                        "⚠️ 開始日期不能晚於結束日期"
                     )
                     return
 
                 reply(
                     event,
-                    "â ï¸ æ¥ææ ¼å¼çä¸æ\n\n"
-                    "å¯ä»¥éæ¨£è¼¸å¥ï¼\n"
-                    "/æ¥é·è²¨ 10/1 10/7\n"
-                    "/æ¥é·è²¨ 10/1~10/7\n"
-                    "/æ¥åéé·è²¨ 10/1 10/7\n"
-                    "/æ¥é·è²¨ 10/7"
+                    "⚠️ 日期格式看不懂\n\n"
+                    "可以這樣輸入：\n"
+                    "/查銷貨 10/1 10/7\n"
+                    "/查銷貨 10/1~10/7\n"
+                    "/查區間銷貨 10/1 10/7\n"
+                    "/查銷貨 10/7"
                 )
                 return
 
@@ -4305,10 +4305,10 @@ def handle_message(event):
             )
 
             lines = [
-                "ð¤ é·è²¨æ¥è©¢",
+                "📤 銷貨查詢",
                 (
                     f"{format_query_date(start_date)}"
-                    f" ï½ "
+                    f" ～ "
                     f"{format_query_date(end_date)}"
                 ),
                 "",
@@ -4316,19 +4316,19 @@ def handle_message(event):
 
             if not result["rows"]:
                 lines.append(
-                    "éååéæ²æé·è²¨ç´é"
+                    "這個區間沒有銷貨紀錄"
                 )
             else:
                 for row in result["rows"]:
                     lines.append(
-                        f"{row['code']}ï¼"
-                        f"{row['quantity']} å¼µ"
+                        f"{row['code']}："
+                        f"{row['quantity']} 張"
                     )
 
                 lines.extend([
                     "",
-                    f"ç¸½é·è²¨ï¼{result['total_quantity']} å¼µ",
-                    f"è¨å®ï¼{result['total_orders']} ç­",
+                    f"總銷貨：{result['total_quantity']} 張",
+                    f"訂單：{result['total_orders']} 筆",
                 ])
 
             reply(
@@ -4339,22 +4339,22 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # æ¥æ¥æåéé²è²¨
+        # 查日期區間進貨
         #
-        # æ¯æ´ï¼
-        # /æ¥é²è²¨ 10/1 10/7
-        # /æ¥åéé²è²¨ 10/1~10/7
-        # /åéé²è²¨ 10/7
-        # /é²è²¨ 10/1 10/7
+        # 支援：
+        # /查進貨 10/1 10/7
+        # /查區間進貨 10/1~10/7
+        # /區間進貨 10/7
+        # /進貨 10/1 10/7
         # ------------------------------------------
 
         stock_range = parse_date_range_command(
             text,
             (
-                "æ¥é²è²¨",
-                "æ¥åéé²è²¨",
-                "åéé²è²¨",
-                "é²è²¨",
+                "查進貨",
+                "查區間進貨",
+                "區間進貨",
+                "進貨",
             ),
         )
 
@@ -4365,18 +4365,18 @@ def handle_message(event):
                 if stock_range["reason"] == "reverse":
                     reply(
                         event,
-                        "â ï¸ éå§æ¥æä¸è½ææ¼çµææ¥æ"
+                        "⚠️ 開始日期不能晚於結束日期"
                     )
                     return
 
                 reply(
                     event,
-                    "â ï¸ æ¥ææ ¼å¼çä¸æ\n\n"
-                    "å¯ä»¥éæ¨£è¼¸å¥ï¼\n"
-                    "/æ¥é²è²¨ 10/1 10/7\n"
-                    "/æ¥é²è²¨ 10/1~10/7\n"
-                    "/æ¥åéé²è²¨ 10/1 10/7\n"
-                    "/æ¥é²è²¨ 10/7"
+                    "⚠️ 日期格式看不懂\n\n"
+                    "可以這樣輸入：\n"
+                    "/查進貨 10/1 10/7\n"
+                    "/查進貨 10/1~10/7\n"
+                    "/查區間進貨 10/1 10/7\n"
+                    "/查進貨 10/7"
                 )
                 return
 
@@ -4390,10 +4390,10 @@ def handle_message(event):
             )
 
             lines = [
-                "ð¥ é²è²¨æ¥è©¢",
+                "📥 進貨查詢",
                 (
                     f"{format_query_date(start_date)}"
-                    f" ï½ "
+                    f" ～ "
                     f"{format_query_date(end_date)}"
                 ),
                 "",
@@ -4401,19 +4401,19 @@ def handle_message(event):
 
             if not result["rows"]:
                 lines.append(
-                    "éååéæ²æé²è²¨ç´é"
+                    "這個區間沒有進貨紀錄"
                 )
             else:
                 for row in result["rows"]:
                     lines.append(
-                        f"{row['code']}ï¼"
-                        f"{row['quantity']} å¼µ"
+                        f"{row['code']}："
+                        f"{row['quantity']} 張"
                     )
 
                 lines.extend([
                     "",
-                    f"ç¸½é²è²¨ï¼{result['total_quantity']} å¼µ",
-                    f"å¥åº«æ¹æ¬¡ï¼{result['total_batches']} ç­",
+                    f"總進貨：{result['total_quantity']} 張",
+                    f"入庫批次：{result['total_batches']} 筆",
                 ])
 
             reply(
@@ -4424,14 +4424,14 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # ä»æ¥é·å®
-        # ä»¥ç®å LINE ç¾¤çµ / èå¤©å®¤çºä¸»
+        # 今日銷售
+        # 以目前 LINE 群組 / 聊天室為主
         # ------------------------------------------
 
         if text in (
-            "ä»æ¥é·å®",
-            "ä»å¤©é·å®",
-            "/ä»æ¥é·å®",
+            "今日銷售",
+            "今天銷售",
+            "/今日銷售",
         ):
 
             sales = get_today_sales(
@@ -4441,23 +4441,23 @@ def handle_message(event):
             if not sales["rows"]:
                 reply(
                     event,
-                    "ð ä»æ¥é·å®\n"
-                    "ç®åå°ç¡åºåº«ç´é"
+                    "📊 今日銷售\n"
+                    "目前尚無出庫紀錄"
                 )
                 return
 
             lines = [
-                "ð ä»æ¥é·å®",
-                f"ç¸½åºåº«ï¼{sales['total_quantity']} å¼µ",
-                f"è¨å®æ¸ï¼{sales['total_orders']} ç­",
+                "📊 今日銷售",
+                f"總出庫：{sales['total_quantity']} 張",
+                f"訂單數：{sales['total_orders']} 筆",
                 "",
             ]
 
             for row in sales["rows"]:
                 lines.append(
-                    f"{row['code']}ï¼"
-                    f"{row['quantity']} å¼µ"
-                    f"ï¼{row['orders']} ç­ï¼"
+                    f"{row['code']}："
+                    f"{row['quantity']} 張"
+                    f"（{row['orders']} 筆）"
                 )
 
             reply(
@@ -4468,10 +4468,10 @@ def handle_message(event):
 
 
         # ------------------------------------------
-        # æ¥è¨å®
+        # 查訂單
         # ------------------------------------------
 
-        if text.startswith("æ¥å® "):
+        if text.startswith("查單 "):
 
             order_no = text[3:].strip()
 
@@ -4482,7 +4482,7 @@ def handle_message(event):
             if not order:
                 reply(
                     event,
-                    f"â ï¸ æ¾ä¸å°è¨å®ï¼"
+                    f"⚠️ 找不到訂單："
                     f"{order_no}"
                 )
                 return
@@ -4497,59 +4497,59 @@ def handle_message(event):
 
             reply(
                 event,
-                f"ð§¾ è¨å®è³æ\n"
-                f"è¨å®ï¼{order['order_no']}\n"
-                f"å®¢æ¶ï¼{order['sold_to']}\n"
-                f"ååï¼{order['code']}\n"
-                f"æ¸éï¼{order['quantity']}\n"
-                f"æéï¼{created_at}\n\n"
+                f"🧾 訂單資料\n"
+                f"訂單：{order['order_no']}\n"
+                f"客戶：{order['sold_to']}\n"
+                f"商品：{order['code']}\n"
+                f"數量：{order['quantity']}\n"
+                f"時間：{created_at}\n\n"
                 f"{serial_text}"
             )
             return
 
 
         # ------------------------------------------
-        # æä»¤èªªæ
+        # 指令說明
         # ------------------------------------------
 
-        if text == "æä»¤":
+        if text == "指令":
 
             command_text = (
-                "ð å¯ç¨æä»¤\n\n"
-                "æ¥èªå·±çIDï¼/æçID\n"
-                "æ¸¬è©¦ï¼/æ¸¬è©¦\n\n"
-                "è¨å¸³ï¼/å°ç¾ +1900\n"
-                "æ¶æ¬¾ï¼/å°ç¾ -1900\n"
-                "æ¥å¸³ï¼/æ¥å¸³ å°ç¾\n\n"
-                "å¨é¨åº«å­ï¼/åº«å­\n"
-                "å®ååº«å­ï¼/æ¥åº«å­ MyCard1000\n\n"
-                "å¥åº«ï¼\n"
-                "/å¥åº« MyCard1000\n"
-                "åºè1\n"
-                "åºè2\n\n"
-                "å®æ´åºåº«ï¼/ç¼ å°ç¾ MyCard1000 5\n"
-                "å¿«éåºåº«ï¼/å¤§10 æ /å¤§*10\n"
-                "å¤åé ï¼æ¯è¡ä¸åï¼ä¾å¦ /å¤§10ã/å°20\n\n"
-                "æ¤åç¾¤çµä¸ä¸ç­ï¼/æ¤å\n"
-                "ä»æ¥é·å®ï¼/ä»æ¥é·å®\n"
-                "æ¥è¨å®ï¼/æ¥å® TXxxxxxxxx\n"
-                "è£ä¸ä¸å®ï¼/è£ä¸ä¸å® å®¢æ¶å\n"
-                "æå®è£å®ï¼/è£å® TXxxxxxxxx å®¢æ¶å\n"
-                "åæ­¥è£å®ï¼/åæ­¥è£å®\n"
-                "æ¥æé·è²¨ï¼/æ¥é·è²¨ 10/1 10/7\n"
-                "ï¼ä¹å¯ /æ¥åéé·è²¨ï¼\n"
-                "æ¥æé²è²¨ï¼/æ¥é²è²¨ 10/1 10/7\n"
-                "ï¼ä¹å¯ /æ¥åéé²è²¨ï¼\n"
-                "æ´çåºèå¯ç¢¼ï¼/æ´ç\n"
-                "ç©ºç½æ¹éèï¼/é"
+                "📋 可用指令\n\n"
+                "查自己的ID：/我的ID\n"
+                "測試：/測試\n\n"
+                "記帳：/小美 +1900\n"
+                "收款：/小美 -1900\n"
+                "查帳：/查帳 小美\n\n"
+                "全部庫存：/庫存\n"
+                "單品庫存：/查庫存 MyCard1000\n\n"
+                "入庫：\n"
+                "/入庫 MyCard1000\n"
+                "序號1\n"
+                "序號2\n\n"
+                "完整出庫：/發 小美 MyCard1000 5\n"
+                "快速出庫：/大10 或 /大*10\n"
+                "多品項：每行一個，例如 /大10、/小20\n\n"
+                "撤回群組上一筆：/撤回\n"
+                "今日銷售：/今日銷售\n"
+                "查訂單：/查單 TXxxxxxxxx\n"
+                "補上一單：/補上一單 客戶名\n"
+                "指定補單：/補單 TXxxxxxxxx 客戶名\n"
+                "同步補單：/同步補單\n"
+                "日期銷貨：/查銷貨 10/1 10/7\n"
+                "（也可 /查區間銷貨）\n"
+                "日期進貨：/查進貨 10/1 10/7\n"
+                "（也可 /查區間進貨）\n"
+                "整理序號密碼：/整理\n"
+                "空白改逗號：/逗"
             )
 
             if is_admin(operator):
                 command_text += (
-                    "\n\nð ç®¡çå¡æä»¤\n"
-                    "/å æ¬é Uxxxxxxxx\n"
-                    "/åªæ¬é Uxxxxxxxx\n"
-                    "/æ¬éåå®"
+                    "\n\n👑 管理員指令\n"
+                    "/加權限 Uxxxxxxxx\n"
+                    "/刪權限 Uxxxxxxxx\n"
+                    "/權限名單"
                 )
 
             reply(
@@ -4561,8 +4561,8 @@ def handle_message(event):
 
         reply(
             event,
-            "çä¸æéåæä»¤ ð\n"
-            "è¼¸å¥ã/æä»¤ãæ¥çä½¿ç¨æ¹å¼"
+            "看不懂這個指令 😆\n"
+            "輸入「/指令」查看使用方式"
         )
 
     except Exception as e:
@@ -4574,13 +4574,13 @@ def handle_message(event):
 
         reply(
             event,
-            "â ï¸ ç³»çµ±èçå¤±æï¼"
-            "è«ç¨å¾åè©¦ã"
+            "⚠️ 系統處理失敗，"
+            "請稍後再試。"
         )
 
 
 # ==================================================
-# åå
+# 啟動
 # ==================================================
 
 if __name__ == "__main__":
