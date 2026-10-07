@@ -2550,6 +2550,230 @@ def undo_last_action(
 
 
 # ==================================================
+# æ¥æåéï¼é·è²¨ / é²è²¨æ¥è©¢
+# ==================================================
+
+def parse_query_date(value):
+    """
+    æ¯æ´ï¼
+    2026/10/1
+    2026-10-01
+    10/1
+    10-01
+
+    åªææ/æ¥æï¼ä½¿ç¨å°ç£ç®åå¹´ä»½ã
+    """
+    raw = str(value or "").strip()
+
+    formats = [
+        "%Y/%m/%d",
+        "%Y-%m-%d",
+        "%m/%d",
+        "%m-%d",
+    ]
+
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(raw, fmt)
+
+            if fmt in ("%m/%d", "%m-%d"):
+                now = datetime.now(
+                    ZoneInfo("Asia/Taipei")
+                )
+                parsed = parsed.replace(
+                    year=now.year
+                )
+
+            return parsed.date()
+
+        except ValueError:
+            pass
+
+    raise ValueError("æ¥ææ ¼å¼é¯èª¤")
+
+
+def get_sales_by_date_range(
+    context_id,
+    start_date,
+    end_date,
+):
+    """
+    æ¥ç®åç¾¤çµ/èå¤©å®¤æå®æ¥æåéçé·è²¨ã
+    èµ·è¨æ¥é½åå«ã
+    """
+    conn = get_db()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            cur.execute(
+                """
+                SELECT
+                    p.code,
+                    SUM(t.quantity)::bigint AS quantity,
+                    COUNT(
+                        DISTINCT COALESCE(
+                            t.sale_batch_no,
+                            t.order_no
+                        )
+                    )::bigint AS orders
+                FROM transactions t
+                JOIN products p
+                  ON p.id = t.product_id
+                WHERE t.group_id = %s
+                  AND t.created_at >= %s::date
+                  AND t.created_at < (
+                        %s::date + interval '1 day'
+                      )
+                GROUP BY p.id, p.code
+                ORDER BY
+                    SUM(t.quantity) DESC,
+                    LOWER(p.code)
+                """,
+                (
+                    context_id,
+                    start_date,
+                    end_date,
+                ),
+            )
+
+            rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(
+                        SUM(quantity),
+                        0
+                    )::bigint AS total_quantity,
+                    COUNT(
+                        DISTINCT COALESCE(
+                            sale_batch_no,
+                            order_no
+                        )
+                    )::bigint AS total_orders
+                FROM transactions
+                WHERE group_id = %s
+                  AND created_at >= %s::date
+                  AND created_at < (
+                        %s::date + interval '1 day'
+                      )
+                """,
+                (
+                    context_id,
+                    start_date,
+                    end_date,
+                ),
+            )
+
+            total = cur.fetchone()
+
+            return {
+                "rows": rows,
+                "total_quantity": total["total_quantity"],
+                "total_orders": total["total_orders"],
+            }
+
+    finally:
+        conn.close()
+
+
+def get_stock_in_by_date_range(
+    context_id,
+    start_date,
+    end_date,
+):
+    """
+    æ¥ç®åç¾¤çµ/èå¤©å®¤æå®æ¥æåéçé²è²¨ã
+    ä»¥ stock_actions çå¥åº«åä½ + serials.batch_no è¨ç®ï¼
+    å·²æ¤åçå¥åº«ä¸è¨ã
+    """
+    conn = get_db()
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            cur.execute(
+                """
+                SELECT
+                    p.code,
+                    COUNT(s.id)::bigint AS quantity,
+                    COUNT(
+                        DISTINCT a.ref_no
+                    )::bigint AS batches
+                FROM stock_actions a
+                JOIN serials s
+                  ON s.batch_no = a.ref_no
+                JOIN products p
+                  ON p.id = s.product_id
+                WHERE a.group_id = %s
+                  AND a.action_type = 'stock_in'
+                  AND a.undone = FALSE
+                  AND a.created_at >= %s::date
+                  AND a.created_at < (
+                        %s::date + interval '1 day'
+                      )
+                GROUP BY p.id, p.code
+                ORDER BY
+                    COUNT(s.id) DESC,
+                    LOWER(p.code)
+                """,
+                (
+                    context_id,
+                    start_date,
+                    end_date,
+                ),
+            )
+
+            rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                    COUNT(s.id)::bigint AS total_quantity,
+                    COUNT(
+                        DISTINCT a.ref_no
+                    )::bigint AS total_batches
+                FROM stock_actions a
+                JOIN serials s
+                  ON s.batch_no = a.ref_no
+                WHERE a.group_id = %s
+                  AND a.action_type = 'stock_in'
+                  AND a.undone = FALSE
+                  AND a.created_at >= %s::date
+                  AND a.created_at < (
+                        %s::date + interval '1 day'
+                      )
+                """,
+                (
+                    context_id,
+                    start_date,
+                    end_date,
+                ),
+            )
+
+            total = cur.fetchone()
+
+            return {
+                "rows": rows,
+                "total_quantity": total["total_quantity"],
+                "total_batches": total["total_batches"],
+            }
+
+    finally:
+        conn.close()
+
+
+def format_query_date(value):
+    return value.strftime("%Y/%m/%d")
+
+
+
+# ==================================================
 # Supabaseï¼ä»æ¥é·å®
 # ä»¥ç®å LINE ç¾¤çµ / èå¤©å®¤çºä¸»
 # ==================================================
@@ -3952,6 +4176,154 @@ def handle_message(event):
 
 
         # ------------------------------------------
+        # æ¥æ¥æåéé·è²¨
+        # ------------------------------------------
+
+        if text.startswith("æ¥é·è²¨ "):
+
+            parts = text.split()
+
+            if len(parts) != 3:
+                reply(
+                    event,
+                    "æ ¼å¼ï¼/æ¥é·è²¨ éå§æ¥æ çµææ¥æ\n"
+                    "ä¾å¦ï¼/æ¥é·è²¨ 2026/10/1 2026/10/7"
+                )
+                return
+
+            try:
+                start_date = parse_query_date(parts[1])
+                end_date = parse_query_date(parts[2])
+            except ValueError:
+                reply(
+                    event,
+                    "â ï¸ æ¥ææ ¼å¼é¯èª¤\n"
+                    "ä¾å¦ï¼/æ¥é·è²¨ 2026/10/1 2026/10/7"
+                )
+                return
+
+            if start_date > end_date:
+                reply(
+                    event,
+                    "â ï¸ éå§æ¥æä¸è½ææ¼çµææ¥æ"
+                )
+                return
+
+            result = get_sales_by_date_range(
+                context_id,
+                start_date,
+                end_date,
+            )
+
+            lines = [
+                "ð¤ é·è²¨æ¥è©¢",
+                (
+                    f"{format_query_date(start_date)}"
+                    f" ï½ "
+                    f"{format_query_date(end_date)}"
+                ),
+                "",
+            ]
+
+            if not result["rows"]:
+                lines.append(
+                    "éååéæ²æé·è²¨ç´é"
+                )
+            else:
+                for row in result["rows"]:
+                    lines.append(
+                        f"{row['code']}ï¼"
+                        f"{row['quantity']} å¼µ"
+                    )
+
+                lines.extend([
+                    "",
+                    f"ç¸½é·è²¨ï¼{result['total_quantity']} å¼µ",
+                    f"è¨å®ï¼{result['total_orders']} ç­",
+                ])
+
+            reply(
+                event,
+                "\n".join(lines)
+            )
+            return
+
+
+        # ------------------------------------------
+        # æ¥æ¥æåéé²è²¨
+        # ------------------------------------------
+
+        if text.startswith("æ¥é²è²¨ "):
+
+            parts = text.split()
+
+            if len(parts) != 3:
+                reply(
+                    event,
+                    "æ ¼å¼ï¼/æ¥é²è²¨ éå§æ¥æ çµææ¥æ\n"
+                    "ä¾å¦ï¼/æ¥é²è²¨ 2026/10/1 2026/10/7"
+                )
+                return
+
+            try:
+                start_date = parse_query_date(parts[1])
+                end_date = parse_query_date(parts[2])
+            except ValueError:
+                reply(
+                    event,
+                    "â ï¸ æ¥ææ ¼å¼é¯èª¤\n"
+                    "ä¾å¦ï¼/æ¥é²è²¨ 2026/10/1 2026/10/7"
+                )
+                return
+
+            if start_date > end_date:
+                reply(
+                    event,
+                    "â ï¸ éå§æ¥æä¸è½ææ¼çµææ¥æ"
+                )
+                return
+
+            result = get_stock_in_by_date_range(
+                context_id,
+                start_date,
+                end_date,
+            )
+
+            lines = [
+                "ð¥ é²è²¨æ¥è©¢",
+                (
+                    f"{format_query_date(start_date)}"
+                    f" ï½ "
+                    f"{format_query_date(end_date)}"
+                ),
+                "",
+            ]
+
+            if not result["rows"]:
+                lines.append(
+                    "éååéæ²æé²è²¨ç´é"
+                )
+            else:
+                for row in result["rows"]:
+                    lines.append(
+                        f"{row['code']}ï¼"
+                        f"{row['quantity']} å¼µ"
+                    )
+
+                lines.extend([
+                    "",
+                    f"ç¸½é²è²¨ï¼{result['total_quantity']} å¼µ",
+                    f"å¥åº«æ¹æ¬¡ï¼{result['total_batches']} ç­",
+                ])
+
+            reply(
+                event,
+                "\n".join(lines)
+            )
+            return
+
+
+        # ------------------------------------------
         # ä»æ¥é·å®
         # ä»¥ç®å LINE ç¾¤çµ / èå¤©å®¤çºä¸»
         # ------------------------------------------
@@ -4064,6 +4436,8 @@ def handle_message(event):
                 "è£ä¸ä¸å®ï¼/è£ä¸ä¸å® å®¢æ¶å\n"
                 "æå®è£å®ï¼/è£å® TXxxxxxxxx å®¢æ¶å\n"
                 "åæ­¥è£å®ï¼/åæ­¥è£å®\n"
+                "æ¥æé·è²¨ï¼/æ¥é·è²¨ 10/1 10/7\n"
+                "æ¥æé²è²¨ï¼/æ¥é²è²¨ 10/1 10/7\n"
                 "æ´çåºèå¯ç¢¼ï¼/æ´ç\n"
                 "ç©ºç½æ¹éèï¼/é"
             )
