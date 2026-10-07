@@ -1546,6 +1546,62 @@ def format_labeled_pairs(raw_text):
             tokens.append((label, value))
 
     if not tokens:
+        # 另一種格式：
+        # 一筆資料分成兩行，筆與筆之間用空白行分隔。
+        #
+        # 例如：
+        # MAEVLM000247
+        # TMDWARHWW97A
+        #
+        # MAEVLM000256
+        # SRN8VPDYFW7Q
+        #
+        # 會整理成：
+        # MAEVLM000247 TMDWARHWW97A
+        # MAEVLM000256 SRN8VPDYFW7Q
+
+        raw_lines = body.splitlines()
+
+        has_blank_separator = any(
+            line.strip() == ""
+            for line in raw_lines
+        )
+
+        if has_blank_separator:
+            groups = []
+            current = []
+
+            for line in raw_lines:
+                if line.strip() == "":
+                    if current:
+                        groups.append(current)
+                        current = []
+                    continue
+
+                current.append(
+                    line.strip()
+                )
+
+            if current:
+                groups.append(current)
+
+            # 這種整理格式限定每一組正好兩行，
+            # 避免把一般多行資料誤合併。
+            if groups and all(
+                len(group) == 2
+                for group in groups
+            ):
+                rows = [
+                    f"{group[0]} {group[1]}"
+                    for group in groups
+                ]
+
+                return {
+                    "ok": True,
+                    "text": "\n".join(rows),
+                    "count": len(rows),
+                }
+
         return {
             "ok": False,
             "reason": "no_pairs",
@@ -2094,6 +2150,70 @@ def sell_serials(
 
     finally:
         conn.close()
+
+
+# ==================================================
+# 入庫貼上格式整理
+# ==================================================
+
+def parse_stock_in_serial_values(raw_lines):
+    """
+    支援兩種貼法：
+
+    1) 原本一行一個序號
+       ABC001
+       ABC002
+
+    2) 一筆序號分成兩行，筆與筆之間有空白行
+       MAEVLM000247
+       TMDWARHWW97A
+
+       MAEVLM000256
+       SRN8VPDYFW7Q
+
+       會自動變成：
+       "MAEVLM000247 TMDWARHWW97A"
+       "MAEVLM000256 SRN8VPDYFW7Q"
+
+    規則：
+    - 有空白行分組時，每一組內的多行會用一個空格合併。
+    - 沒有空白行時，維持舊邏輯：一行就是一筆，避免誤把一般序號兩兩合併。
+    """
+    data_lines = raw_lines[1:]
+
+    has_blank_separator = any(
+        line.strip() == ""
+        for line in data_lines
+    )
+
+    if not has_blank_separator:
+        return [
+            line
+            for line in data_lines
+            if line.strip() != ""
+        ]
+
+    groups = []
+    current = []
+
+    for line in data_lines:
+        if line.strip() == "":
+            if current:
+                groups.append(current)
+                current = []
+            continue
+
+        current.append(line.strip())
+
+    if current:
+        groups.append(current)
+
+    return [
+        " ".join(group)
+        for group in groups
+        if group
+    ]
+
 
 
 # ==================================================
@@ -3399,6 +3519,7 @@ def handle_message(event):
         # Abc001xY
         # TEST-002
         # 120 556 AA
+        # 也支援「一筆分兩行、筆與筆之間空一行」
         # ------------------------------------------
 
         if text.startswith("入庫 "):
@@ -3415,11 +3536,9 @@ def handle_message(event):
                 .strip()
             )
 
-            serial_values = [
-                line
-                for line in raw_lines[1:]
-                if line.strip() != ""
-            ]
+            serial_values = parse_stock_in_serial_values(
+                raw_lines
+            )
 
             if (
                 not product_text
@@ -3501,11 +3620,16 @@ def handle_message(event):
 
                 reply(
                     event,
-                    "⚠️ 沒有找到可整理的序號/密碼\n\n"
-                    "格式例如：\n"
+                    "⚠️ 沒有找到可整理的資料\n\n"
+                    "支援兩種格式：\n"
+                    "1. 序號/密碼標籤\n"
+                    "2. 每筆兩行，中間空一行\n\n"
+                    "例如：\n"
                     "/整理\n"
-                    "序號1: MFXMTA003786\n"
-                    "密碼1: LFC6M8G3DF8G"
+                    "MAEVLM000247\n"
+                    "TMDWARHWW97A\n\n"
+                    "MAEVLM000256\n"
+                    "SRN8VPDYFW7Q"
                 )
                 return
 
