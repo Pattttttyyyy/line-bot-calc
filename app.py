@@ -604,6 +604,142 @@ def sync_existing_inventory_to_product_sheets():
     }
 
 
+
+def compare_google_inventory_with_supabase(product_code=None):
+    """
+    比對 Google 商品分頁目前庫存（D 有值、E 空白）與 Supabase。
+
+    可指定單一 product_code；未指定時比對全部正式商品。
+    回傳每個商品的 Google 數量、Supabase available 數量，以及異常序號：
+    - missing：Supabase 完全找不到
+    - wrong_product：Supabase 有此序號，但掛在其他商品
+    - not_available：Supabase 有此序號，但狀態不是 available
+    """
+    targets = (
+        [product_code]
+        if product_code
+        else list(PRODUCT_SHEET_NAMES.keys())
+    )
+
+    results = []
+    conn = get_db()
+
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            for code in targets:
+                if code not in PRODUCT_SHEET_NAMES:
+                    results.append({
+                        "code": code,
+                        "error": "unsupported_product",
+                    })
+                    continue
+
+                ws = get_product_sheet(code)
+                values = ws.get_all_values()
+
+                google_serials = []
+                seen = set()
+                sheet_duplicates = []
+
+                for row_no, row in enumerate(values[1:], start=2):
+                    incoming = (
+                        str(row[3]).strip()
+                        if len(row) > 3
+                        else ""
+                    )
+                    sold = (
+                        str(row[4]).strip()
+                        if len(row) > 4
+                        else ""
+                    )
+
+                    if not incoming or sold:
+                        continue
+
+                    if incoming in seen:
+                        sheet_duplicates.append({
+                            "serial": incoming,
+                            "row": row_no,
+                        })
+                        continue
+
+                    seen.add(incoming)
+                    google_serials.append(incoming)
+
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM serials s
+                    JOIN products p ON p.id = s.product_id
+                    WHERE LOWER(p.code) = LOWER(%s)
+                      AND s.status = 'available'
+                    """,
+                    (code,),
+                )
+                supabase_count = cur.fetchone()["count"]
+
+                rows_by_serial = {}
+
+                if google_serials:
+                    cur.execute(
+                        """
+                        SELECT
+                            s.serial,
+                            s.status,
+                            p.code AS product_code,
+                            s.order_no,
+                            s.batch_no
+                        FROM serials s
+                        JOIN products p ON p.id = s.product_id
+                        WHERE s.serial = ANY(%s)
+                        """,
+                        (google_serials,),
+                    )
+
+                    for db_row in cur.fetchall():
+                        rows_by_serial[db_row["serial"]] = db_row
+
+                missing = []
+                wrong_product = []
+                not_available = []
+
+                for serial in google_serials:
+                    db_row = rows_by_serial.get(serial)
+
+                    if not db_row:
+                        missing.append(serial)
+                        continue
+
+                    if str(db_row["product_code"]).lower() != str(code).lower():
+                        wrong_product.append({
+                            "serial": serial,
+                            "product_code": db_row["product_code"],
+                            "status": db_row["status"],
+                        })
+                        continue
+
+                    if db_row["status"] != "available":
+                        not_available.append({
+                            "serial": serial,
+                            "status": db_row["status"],
+                            "order_no": db_row.get("order_no"),
+                        })
+
+                results.append({
+                    "code": code,
+                    "google_count": len(google_serials),
+                    "supabase_count": supabase_count,
+                    "missing": missing,
+                    "wrong_product": wrong_product,
+                    "not_available": not_available,
+                    "sheet_duplicates": sheet_duplicates,
+                })
+
+    finally:
+        conn.close()
+
+    return results
+
 def import_google_inventory_to_supabase(operator):
     """
     一次性把各商品分頁目前仍可用的 Google 庫存補進 Supabase。
@@ -5042,6 +5178,98 @@ def handle_message(event):
             )
             return
 
+
+
+        # ------------------------------------------
+        # 管理員專用：比對 Google 與 Supabase 庫存
+        # /比對Google庫存 大卡
+        # ------------------------------------------
+
+        if text.startswith("比對Google庫存"):
+
+            if not is_admin(operator):
+                reply(
+                    event,
+                    "⛔ 只有管理員可以比對庫存"
+                )
+                return
+
+            parts = text.split(maxsplit=1)
+            product_code = (
+                parts[1].strip()
+                if len(parts) == 2
+                else None
+            )
+
+            results = compare_google_inventory_with_supabase(
+                product_code
+            )
+
+            lines = [
+                "🔎 Google / Supabase 庫存比對",
+            ]
+
+            for item in results:
+                if item.get("error"):
+                    lines.append(
+                        f"⚠️ 不支援商品：{item['code']}"
+                    )
+                    continue
+
+                diff = (
+                    item["google_count"]
+                    - item["supabase_count"]
+                )
+
+                lines.extend([
+                    "",
+                    (
+                        f"{item['code']}：Google {item['google_count']} / "
+                        f"Supabase {item['supabase_count']} "
+                        f"（差 {diff:+d}）"
+                    ),
+                ])
+
+                for serial in item["missing"]:
+                    lines.append(
+                        f"❌ Supabase 無此序號：{serial}"
+                    )
+
+                for row in item["wrong_product"]:
+                    lines.append(
+                        f"⚠️ 商品不符：{row['serial']} → "
+                        f"{row['product_code']} / {row['status']}"
+                    )
+
+                for row in item["not_available"]:
+                    extra = (
+                        f" / {row['order_no']}"
+                        if row.get("order_no")
+                        else ""
+                    )
+                    lines.append(
+                        f"⚠️ 非可用：{row['serial']} → "
+                        f"{row['status']}{extra}"
+                    )
+
+                for row in item["sheet_duplicates"]:
+                    lines.append(
+                        f"⚠️ Google 重複：{row['serial']}（第 {row['row']} 列）"
+                    )
+
+                if not (
+                    item["missing"]
+                    or item["wrong_product"]
+                    or item["not_available"]
+                    or item["sheet_duplicates"]
+                ):
+                    lines.append("✅ 序號狀態全部一致")
+
+            reply(
+                event,
+                "\n".join(lines)
+            )
+            return
 
         # ------------------------------------------
         # 管理員專用：把 Google 商品分頁現有庫存匯入 Supabase
