@@ -604,6 +604,153 @@ def sync_existing_inventory_to_product_sheets():
     }
 
 
+def import_google_inventory_to_supabase(operator):
+    """
+    一次性把各商品分頁目前仍可用的 Google 庫存補進 Supabase。
+
+    規則：
+    - D 欄（進貨序號）有值，且 E 欄（賣出序號）空白，才視為目前庫存。
+    - Supabase 已存在的 serial 一律跳過，不改狀態、不覆蓋商品，避免把已售序號復活。
+    - 只新增 Supabase 完全不存在的序號，狀態為 available。
+    - 不建立 stock_actions，避免之後使用 /撤回 誤把整批歷史匯入刪掉。
+    """
+    conn = get_db()
+
+    added_total = 0
+    duplicate_total = 0
+    sheet_sold_total = 0
+    invalid_total = 0
+    per_product = []
+    failed = []
+
+    try:
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+            for product_code, sheet_name in PRODUCT_SHEET_NAMES.items():
+                try:
+                    product = find_product(
+                        conn,
+                        product_code,
+                    )
+
+                    if not product:
+                        failed.append(
+                            f"{product_code}（Supabase 找不到商品）"
+                        )
+                        continue
+
+                    ws = spreadsheet.worksheet(sheet_name)
+                    values = ws.get_all_values()
+
+                    # 每個商品用獨立批次編號，方便日後追查來源。
+                    batch_no = (
+                        "GSHEET-"
+                        + datetime.now(
+                            ZoneInfo("Asia/Taipei")
+                        ).strftime("%Y%m%d%H%M%S")
+                        + "-"
+                        + product_code
+                    )
+
+                    added = 0
+                    duplicates = 0
+                    sold_in_sheet = 0
+                    invalid = 0
+                    seen_in_sheet = set()
+
+                    for row in values[1:]:
+                        incoming = (
+                            str(row[3])
+                            if len(row) > 3
+                            else ""
+                        )
+                        sold = (
+                            str(row[4]).strip()
+                            if len(row) > 4
+                            else ""
+                        )
+
+                        if not incoming.strip():
+                            continue
+
+                        # E 欄已有賣出序號 = 這筆不是目前庫存。
+                        if sold:
+                            sold_in_sheet += 1
+                            continue
+
+                        # 同一張表若 D 欄自己重複，只處理第一次。
+                        dedupe_key = incoming
+                        if dedupe_key in seen_in_sheet:
+                            duplicates += 1
+                            continue
+                        seen_in_sheet.add(dedupe_key)
+
+                        cur.execute(
+                            """
+                            INSERT INTO serials (
+                                product_id,
+                                serial,
+                                status,
+                                operator,
+                                batch_no
+                            )
+                            VALUES (%s, %s, 'available', %s, %s)
+                            ON CONFLICT (serial)
+                            DO NOTHING
+                            RETURNING serial
+                            """,
+                            (
+                                product["id"],
+                                incoming,
+                                operator,
+                                batch_no,
+                            ),
+                        )
+
+                        if cur.fetchone():
+                            added += 1
+                        else:
+                            duplicates += 1
+
+                    conn.commit()
+
+                    added_total += added
+                    duplicate_total += duplicates
+                    sheet_sold_total += sold_in_sheet
+                    invalid_total += invalid
+
+                    per_product.append({
+                        "code": product_code,
+                        "added": added,
+                        "duplicates": duplicates,
+                        "sold_in_sheet": sold_in_sheet,
+                        "invalid": invalid,
+                    })
+
+                except Exception as e:
+                    conn.rollback()
+                    failed.append(product_code)
+                    print(
+                        "GOOGLE INVENTORY IMPORT ERROR:",
+                        product_code,
+                        repr(e),
+                    )
+
+        return {
+            "ok": not failed,
+            "added": added_total,
+            "duplicates": duplicate_total,
+            "sheet_sold": sheet_sold_total,
+            "invalid": invalid_total,
+            "per_product": per_product,
+            "failed": failed,
+        }
+
+    finally:
+        conn.close()
+
+
 # ==================================================
 # Supabase PostgreSQL
 # ==================================================
@@ -4897,6 +5044,44 @@ def handle_message(event):
 
 
         # ------------------------------------------
+        # 管理員專用：把 Google 商品分頁現有庫存匯入 Supabase
+        # ------------------------------------------
+
+        if text == "匯入Google庫存":
+
+            if not is_admin(operator):
+                reply(
+                    event,
+                    "⛔ 只有管理員可以匯入 Google 庫存"
+                )
+                return
+
+            result = import_google_inventory_to_supabase(
+                operator
+            )
+
+            lines = [
+                "✅ Google 庫存匯入完成",
+                f"新增到 Supabase：{result['added']} 張",
+                f"已存在／重複跳過：{result['duplicates']} 張",
+                f"Google 已售出跳過：{result['sheet_sold']} 張",
+            ]
+
+            if result["failed"]:
+                lines.extend([
+                    "",
+                    "⚠️ 以下商品沒有完成：",
+                    "、".join(result["failed"]),
+                ])
+
+            reply(
+                event,
+                "\n".join(lines)
+            )
+            return
+
+
+        # ------------------------------------------
         # 管理員專用：同步現有庫存到各商品分頁
         # ------------------------------------------
 
@@ -5296,7 +5481,8 @@ def handle_message(event):
                     "/加權限 Uxxxxxxxx\n"
                     "/刪權限 Uxxxxxxxx\n"
                     "/權限名單\n"
-                    "/同步現有庫存"
+                    "/同步現有庫存\n"
+                    "/匯入Google庫存"
                 )
 
             reply(
