@@ -125,6 +125,47 @@ def product_sheet_date(value=None):
         ).strftime("%Y/%m/%d")
 
 
+def ensure_product_sheet_capacity(
+    ws,
+    needed_rows=1,
+    used_rows=None,
+    grow_by=5000,
+    reserve_rows=100,
+):
+    """
+    商品分頁快滿時自動擴充列數。
+    - 每次至少增加 5000 列
+    - 保留 100 列緩衝
+    - 不會改動既有資料
+    """
+    try:
+        if used_rows is None:
+            used_rows = len(ws.col_values(4))
+
+        current_rows = int(ws.row_count)
+        required_rows = int(used_rows) + int(needed_rows) + int(reserve_rows)
+
+        if required_rows <= current_rows:
+            return True
+
+        shortage = required_rows - current_rows
+        blocks = max(
+            1,
+            (shortage + grow_by - 1) // grow_by,
+        )
+        ws.add_rows(blocks * grow_by)
+
+        return True
+
+    except Exception as e:
+        print(
+            "PRODUCT SHEET CAPACITY ERROR:",
+            getattr(ws, "title", ""),
+            repr(e),
+        )
+        return False
+
+
 def append_product_stock_in(
     product_code,
     serials,
@@ -176,6 +217,12 @@ def append_product_stock_in(
                 "",
                 note if index == 0 else "",
             ])
+
+        ensure_product_sheet_capacity(
+            ws,
+            needed_rows=len(rows),
+            used_rows=len(existing) + 1,
+        )
 
         ws.append_rows(
             rows,
@@ -273,6 +320,12 @@ def mark_product_sale(items, customer):
                 )
 
             if fallback:
+                ensure_product_sheet_capacity(
+                    ws,
+                    needed_rows=len(fallback),
+                    used_rows=len(values),
+                )
+
                 ws.append_rows(
                     fallback,
                     value_input_option="RAW",
@@ -580,6 +633,12 @@ def sync_existing_inventory_to_product_sheets():
                         if index == 0
                         else "",
                     ])
+
+                ensure_product_sheet_capacity(
+                    ws,
+                    needed_rows=len(new_rows),
+                    used_rows=len(existing) + 1,
+                )
 
                 ws.append_rows(
                     new_rows,
