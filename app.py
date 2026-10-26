@@ -4125,6 +4125,9 @@ def handle_message(event):
                 .strip()
             )
 
+            if product_text == "1萬":
+                product_text = "MY1萬"
+
             serial_values = parse_stock_in_serial_values(
                 raw_lines
             )
