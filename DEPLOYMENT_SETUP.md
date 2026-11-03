@@ -1,16 +1,18 @@
-# 雲端發佈與部署管道（待核准啟用）
+# 雲端發佈與部署管道
+
+2026-11-03已經使用者核准啟用，GitHub-hosted查核與首次部署皆成功。最新操作結果以Actions工作紀錄為準，歷史版本見README。
 
 ## 能做什麼
 
 雲端GPT透過GitHub連接建立分支、改程式、提出PR；經使用者確認後合併。
 合併功能程式不會因這份流程自動部署。另更新main的 `ops/cloud-request.json` 才會提出雲端查核或部署請求，也能在GitHub網站手動Run workflow。
-目前GitHub連接沒有直接workflow_dispatch工具，因此特別提供「改請求檔案」入口，不依賴原電腦、Cloud Shell或Google Cloud網頁。
-首次合併包含預設check請求，只會提出唯讀查核；啟用Google Cloud身分及GitHub environment後才可成功。
+目前GitHub連接沒有直接workflow_dispatch工具，且寫入曾回覆403，因此提供「改請求檔案」的網頁入口，不依賴原電腦、Cloud Shell或Google Cloud網頁。若連接仍不可寫，使用已登入的GitHub雲端瀏覽器，不索取Token貼到對話。
+首次合併的check請求已成功完成唯讀查核。現有cloud-readonly與production environments分開使用已建立的短期Google身分。
 
 部署須在請求裡明確指定已核准的40碼source_sha、目前正式expected_revision，並把mode改deploy。source_sha必須在main歷史內，不能輸入任意分支或shell指令。
 每次會在無正式憑證的job跑測試，再由production environment核准後取得短期身分。雲端新對話可讀取Actions狀態與安全摘要；核准步驟可在手機GitHub頁面完成。
 
-## 新權限需求（本次尚未授予）
+## 已核准並設定的權限
 
 專案 line-bot-sheet-510416，地區asia-east1；只維護既有Cloud Run服務line-bot-calc及Artifact Registry倉庫line-bot。
 新增一個Workload Identity Pool `line-bot-github`、一個GitHub OIDC provider，以及兩個不產生JSON金鑰的服務帳號：
@@ -39,7 +41,7 @@ roles/run.developer具有指定服務的管理能力，故必須以production核
 建立cloud-readonly與production environments，只允許main。production使用必須核准的reviewer（使用者本人可核准；只有一位維護者時不開啟禁止自我核准）。不允許管理員略過核准規則。
 兩個environment各自設定GCP_WIF_PROVIDER、GCP_CI_SERVICE_ACCOUNT、GCP_PROJECT變數。沒有Token、JSON金鑰、LINE資料庫密碼。
 公開庫的Actions紀錄可被讀取，因此只輸出白名單版本／image digest／健康與固定資源值；不印完整服務設定或gcloud錯誤內容。不能上傳未篩選的服務log為artifact。
-官方Actions已鎖完整commit SHA；升級前重新核對官方來源。GitHub驗證、WIF交換及permission scopes仍需首次實際執行確認，目前只通過本機mock測試。
+官方Actions已鎖完整commit SHA；升級前重新核對官方來源。GitHub驗證、WIF交換、資源範圍與首次部署已經線上驗證成功。production要求Pattttttyyyy核准，禁止略過規則，只允許main；cloud-readonly只允許main。
 
 ## 部署行為與限制
 
@@ -53,7 +55,7 @@ roles/run.developer具有指定服務的管理能力，故必須以production核
 
 ## 目前狀態
 
-檔案已準備、16項無憑證管道測試通過。尚未上傳工作流程、建立WIF/IAM、配置GitHub環境、在Actions建置或部署。正式版本仍為menuproducts1103。
+已設定WIF/IAM與兩個GitHub環境，17項管道測試及首次GitHub-hosted部署成功。min0待命版本以latestCreatedRevisionName及修訂Ready狀態檢查；latestReadyRevisionName在無流量時可能仍指向原服務版本。首次成功版本為line-bot-calc-gh-41648505312-1；以最新Actions查核結果為準。
 
 參考：
 - https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
