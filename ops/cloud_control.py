@@ -77,8 +77,11 @@ class Control:
         run(['gcloud','run','deploy',self.service,'--project='+self.project,'--region='+self.region,
              '--image='+image,'--revision-suffix='+suffix,'--no-traffic','--quiet'])
         staged=self.service_state();self.assert_limits(staged)
-        if self.active(staged)!=expected or staged['status']['latestReadyRevisionName']!=revision:
+        if self.active(staged)!=expected or staged['status'].get('latestCreatedRevisionName')!=revision:
             raise ControlError('Staging did not preserve previous traffic')
+        ready=self.g('run','revisions','describe',revision,'--region='+self.region)
+        if not any(x.get('type')=='Ready' and x.get('status')=='True' for x in ready.get('status',{}).get('conditions',[])):
+            raise ControlError('New revision is not ready; traffic not switched')
         if self.template_without_image(staged)!=before:raise ControlError('Runtime configuration changed; traffic not switched')
         if staged['spec']['template']['spec']['containers'][0]['image']!=image:raise ControlError('Image mismatch')
         print('CLOUD_PHASE switching_traffic',flush=True)
