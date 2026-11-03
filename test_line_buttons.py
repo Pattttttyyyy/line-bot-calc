@@ -61,5 +61,37 @@ class LineSDKTests(unittest.TestCase):
         self.assertIn('/確認未使用並回收 '+token,text)
         self.assertIn('/取消撤回 '+token,text)
         self.assertIn('5分鐘',text)
+    def test_receipt_serializes_as_four_card_texts_and_one_buttonless_flex(self):
+        from receipt_cards import reply_receipt
+        from test_receipt_cards import result
+        r=result();r['serial_chunks']=['FAKE_0000_MiXeD']*4
+        ns=dict(configuration=Configuration(access_token='FAKE'),reply_messages=MagicMock())
+        with patch('linebot.v3.messaging.ApiClient'),patch('linebot.v3.messaging.MessagingApi') as api:
+            reply_receipt(SimpleNamespace(reply_token='FAKE'),r,'fallback',ns)
+        request=api.return_value.reply_message.call_args.args[0].to_dict()
+        messages=request['messages']
+        self.assertEqual(len(messages),5)
+        self.assertTrue(all(m['type']=='text' and m['text']=='FAKE_0000_MiXeD' for m in messages[:4]))
+        self.assertEqual(messages[-1]['type'],'flex')
+        self.assertEqual(messages[-1]['contents']['size'],'kilo')
+        self.assertNotIn('FAKE_0000_MiXeD',str(messages[-1]))
+        self.assertNotIn('action',str(messages[-1]))
+        ns['reply_messages'].assert_not_called()
+    def test_local_receipt_render_failure_falls_back_before_sending(self):
+        from receipt_cards import reply_receipt
+        from test_receipt_cards import result
+        r=result();fallback=MagicMock();ns=dict(configuration=Configuration(access_token='FAKE'),reply_messages=fallback)
+        with patch('receipt_cards.receipt_bubble',side_effect=ValueError),patch('linebot.v3.messaging.MessagingApi') as api:
+            reply_receipt(SimpleNamespace(reply_token='FAKE'),r,'fallback',ns)
+        api.assert_not_called()
+        fallback.assert_called_once_with(unittest.mock.ANY,r['serial_chunks']+['fallback'])
+    def test_api_timeout_has_no_fallback_send(self):
+        from receipt_cards import reply_receipt
+        from test_receipt_cards import result
+        ns=dict(configuration=Configuration(access_token='FAKE'),reply_messages=MagicMock())
+        with patch('linebot.v3.messaging.ApiClient'),patch('linebot.v3.messaging.MessagingApi') as api:
+            api.return_value.reply_message.side_effect=TimeoutError
+            with self.assertRaises(TimeoutError):reply_receipt(SimpleNamespace(reply_token='FAKE'),result(),'fallback',ns)
+        ns['reply_messages'].assert_not_called()
 
 if __name__=='__main__':unittest.main()

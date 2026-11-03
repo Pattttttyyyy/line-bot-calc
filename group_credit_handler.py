@@ -149,7 +149,8 @@ def deliver_sale(event,ns,service,group_id,event_id,result):
     if not sheet_ok or not stock_ok:
         summary+='\n⚠️ 試算表同步未完整；資料庫訂單及欠款已記錄，勿重複下單。'
     try:
-        ns['reply_messages'](event,result['serial_chunks']+[summary])
+        from receipt_cards import reply_receipt
+        reply_receipt(event,result,summary,ns,sheet_ok,stock_ok)
     except Exception:
         try:
             service.delivery(group_id,event_id,'uncertain')
