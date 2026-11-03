@@ -1,6 +1,6 @@
 {
-  "mode": "check",
-  "source_sha": "",
-  "expected_revision": "",
-  "request_id": "initial-readonly-check"
+  "mode": "deploy",
+  "source_sha": "f01b8b15e0b4bb4b232f624b7244e25b142ce69a",
+  "expected_revision": "line-bot-calc-menuproducts1103",
+  "request_id": "first-approved-cloud-deploy-20261103"
 }
