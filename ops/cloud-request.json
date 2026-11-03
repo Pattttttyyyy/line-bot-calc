@@ -1,6 +1,6 @@
 {
   "mode": "deploy",
-  "source_sha": "f01b8b15e0b4bb4b232f624b7244e25b142ce69a",
+  "source_sha": "99e7a1b894a131232d66ab95e5fda52bf641c17f",
   "expected_revision": "line-bot-calc-menuproducts1103",
-  "request_id": "first-approved-cloud-deploy-20261103"
+  "request_id": "first-approved-cloud-deploy-diagnostic-20261103"
 }
