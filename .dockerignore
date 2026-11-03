@@ -1,0 +1,16 @@
+*
+!Dockerfile
+!requirements.txt
+!app.py
+!bot_ui.py
+!bottom_quick.py
+!daily_report.py
+!group_credit.py
+!group_credit_handler.py
+!group_credit_sheet.py
+!manual_order_fields.py
+!manual_orders.py
+!sale_detail_helpers.py
+!sales_sheet_retry.py
+!stock_batch_numbers.py
+!stock_in_notes.py

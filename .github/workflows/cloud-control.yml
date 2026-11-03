@@ -1,0 +1,81 @@
+name: Cloud check or approved deploy
+on:
+  push:
+    branches: [main]
+    paths: [ops/cloud-request.json]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [check, deploy]
+        default: check
+      source_sha:
+        type: string
+        description: Full approved source commit SHA
+      expected_revision:
+        type: string
+        description: Current production revision; required for deploy
+permissions:
+  contents: read
+concurrency:
+  group: line-bot-production-cloud-control
+  cancel-in-progress: false
+jobs:
+  request:
+    if: github.repository == 'Pattttttyyyy/line-bot-calc' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      mode: ${{ steps.request.outputs.mode }}
+      source_sha: ${{ steps.request.outputs.source_sha }}
+      expected_revision: ${{ steps.request.outputs.expected_revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: request
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: python3 ops/cloud_request.py
+  tests:
+    needs: request
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.request.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -X utf8 run_offline_tests.py
+      - run: python -X utf8 -m unittest -q test_line_buttons.py test_cloud_control.py
+      - run: sudo apt-get update -qq && sudo apt-get install -y postgresql-16
+      - run: python -X utf8 run_isolated_tests.py
+  cloud:
+    needs: [request, tests]
+    runs-on: ubuntu-24.04
+    environment: ${{ needs.request.outputs.mode == 'deploy' && 'production' || 'cloud-readonly' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.request.outputs.source_sha }}
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Read-only check or image-only deployment
+        env:
+          GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+          SOURCE_SHA: ${{ needs.request.outputs.source_sha }}
+          EXPECTED_REVISION: ${{ needs.request.outputs.expected_revision }}
+          CLOUD_MODE: ${{ needs.request.outputs.mode }}
+        run: python3 ops/cloud_control.py "$CLOUD_MODE"

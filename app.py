@@ -1,6 +1,17 @@
+from bottom_quick import decorate_reply
+from bot_ui import handle_ui_text, handle_ui_postback
+from group_credit_handler import handle_group_credit, handle_group_credit_postback
+from sale_detail_helpers import sheet_sale_time, write_appended_sale_serials
+from sales_sheet_retry import append_sales_with_retry
+from stock_in_notes import extract_stock_in_note
 import os
 import re
 import uuid
+import threading
+from manual_orders import import_manual_orders
+from stock_batch_numbers import allocate_stock_batch_no
+
+PRODUCT_SHEET_WRITE_LOCK = threading.RLock()
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
@@ -22,7 +33,7 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     TextMessage,
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, PostbackEvent
 
 
 app = Flask(__name__)
@@ -72,16 +83,103 @@ account_sheet = spreadsheet.worksheet(
 )
 
 SALES_SHEET_NAME = "銷售紀錄"
+XUAN_SALES_SHEET_NAME = "軒銷售紀錄"
 
 
-def get_sales_sheet():
+def get_sales_sheet(customer=""):
     """
     銷售紀錄採懶載入。
     即使 Google Sheet 暫時有問題，也不要讓整台 LINE Bot 啟動失敗。
     """
-    return spreadsheet.worksheet(
-        SALES_SHEET_NAME
-    )
+    name = XUAN_SALES_SHEET_NAME if str(customer or "").strip() == "軒" else SALES_SHEET_NAME
+    return spreadsheet.worksheet(name)
+
+
+def get_sales_sheets():
+    """舊版可沒有軒專頁；只略過分頁不存在，不略過存取錯誤。"""
+    sheets = [get_sales_sheet()]
+    try:
+        sheets.append(get_sales_sheet("軒"))
+    except gspread.WorksheetNotFound:
+        pass
+    return sheets
+
+
+def move_sales_rows(source, target, row_numbers, customer=None):
+    """單次 Sheets 原子更新：整列複製後移除來源列，保留公式及人工欄位。"""
+    if not row_numbers or source.id == target.id:
+        return
+    row_numbers = sorted(set(row_numbers))
+    source_headers = source.row_values(1)
+    target_headers = target.row_values(1)
+    if source_headers != target_headers or "訂單編號" not in source_headers:
+        raise ValueError("Sales sheet headers do not match")
+    used_rows = len(target.get_all_values())
+    width = source.col_count
+    if target.col_count < width:
+        target.add_cols(width - target.col_count)
+    ensure_product_sheet_capacity(target, len(row_numbers), used_rows=used_rows)
+    requests = []
+    has_time_array = "銷售時間" in source_headers
+    for offset, row_no in enumerate(row_numbers):
+        destination = used_rows + offset
+        requests.append({"copyPaste": {
+            "source": {"sheetId": source.id, "startRowIndex": row_no - 1,
+                       "endRowIndex": row_no, "startColumnIndex": 0, "endColumnIndex": 11 if has_time_array else width},
+            "destination": {"sheetId": target.id, "startRowIndex": destination,
+                            "endRowIndex": destination + 1, "startColumnIndex": 0, "endColumnIndex": 11 if has_time_array else width},
+            "pasteType": "PASTE_NORMAL",
+        }})
+        if has_time_array and width > 12:
+            requests.append({"copyPaste": {
+                "source": {"sheetId": source.id, "startRowIndex": row_no - 1,
+                           "endRowIndex": row_no, "startColumnIndex": 12, "endColumnIndex": width},
+                "destination": {"sheetId": target.id, "startRowIndex": destination,
+                                "endRowIndex": destination + 1, "startColumnIndex": 12, "endColumnIndex": width},
+                "pasteType": "PASTE_NORMAL"}})
+        if customer is not None:
+            col = source_headers.index("客戶")
+            requests.append({"updateCells": {
+                "start": {"sheetId": target.id, "rowIndex": destination, "columnIndex": col},
+                "rows": [{"values": [{"userEnteredValue": {"stringValue": customer}}]}],
+                "fields": "userEnteredValue",
+            }})
+    for row_no in reversed(row_numbers):
+        requests.append({"deleteDimension": {"range": {
+            "sheetId": source.id, "dimension": "ROWS", "startIndex": row_no - 1, "endIndex": row_no,
+        }}})
+    source.spreadsheet.batch_update({"requests": requests})
+    recolor_sales_dates(target)
+    recolor_sales_dates(source)
+
+
+def recolor_sales_dates(ws):
+    """只調整 A:K 底色，依連續日期交替淡藍與淡黃。"""
+    values = ws.col_values(1)
+    colors = [{"red": 0.93, "green": 0.97, "blue": 1.0},
+              {"red": 1.0, "green": 0.98, "blue": 0.90}]
+    requests = []
+    last_date = None
+    color_index = -1
+    date_colors = {}
+    for row_index, date_value in enumerate(values[1:], start=1):
+        if not str(date_value).strip():
+            continue
+        date_key = tuple(map(int, re.findall(r"\d+", str(date_value))))
+        if date_key != last_date:
+            if date_key not in date_colors:
+                date_colors[date_key] = len(date_colors) % len(colors)
+            color_index = date_colors[date_key]
+            last_date = date_key
+        requests.append({"repeatCell": {
+            "range": {"sheetId": ws.id, "startRowIndex": row_index, "endRowIndex": row_index + 1,
+                      "startColumnIndex": 0, "endColumnIndex": 11},
+            "cell": {"userEnteredFormat": {"backgroundColor": colors[color_index],
+                                           "backgroundColorStyle": {"rgbColor": colors[color_index]}}},
+            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.backgroundColorStyle",
+        }})
+    for offset in range(0, len(requests), 500):
+        ws.spreadsheet.batch_update({"requests": requests[offset:offset + 500]})
 
 
 # ==================================================
@@ -89,6 +187,7 @@ def get_sales_sheet():
 # ==================================================
 
 PRODUCT_SHEET_NAMES = {
+    "MY1000": "MY1000",
     "貝2990": "2990貝殼",
     "貝1490": "1490貝殼",
     "貝1000": "1000貝殼",
@@ -166,6 +265,115 @@ def ensure_product_sheet_capacity(
         return False
 
 
+def insert_product_stock_batch(ws, rows):
+    """Insert physical rows at the original batch/date, never overwrite a logical table."""
+    with PRODUCT_SHEET_WRITE_LOCK:
+        current = ws.get_all_values()
+        date_text, batch = rows[0][0], rows[0][1]
+        existing = {str(r[3]).strip() for r in current[1:] if len(r) > 3 and r[3]}
+        rows = [list(r) for r in rows if str(r[3]).strip() not in existing]
+        if not rows:
+            return {}
+        position = len(current) + 1
+        batch_start = None
+        batch_end = None
+        for index, row in enumerate(current[1:], start=2):
+            marker = row[1] if len(row) > 1 else ""
+            if marker:
+                if batch_start is not None:
+                    break
+                if marker == batch:
+                    batch_start = index
+            if batch_start is not None:
+                batch_end = index
+            elif row and re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}", row[0] or "") and tuple(map(int, row[0].split("/"))) > tuple(map(int, date_text.split("/"))):
+                position = min(position, index)
+        if batch_start is not None:
+            position = batch_end + 1
+            rows[0][0:3] = ["", "", ""]
+        else:
+            rows[0][0:2] = [date_text, batch]
+            rows[0][2] = len(rows)
+        return append_colored_stock_batch(ws, rows, insert_at=position,
+                                          continue_batch=batch_start is not None)
+
+
+def append_colored_stock_batch(ws, rows, value_input_option="RAW", daily=False,
+                               insert_at=None, continue_batch=False):
+    """只將新增 A:K 上色；入庫按批次換色，銷售按日期換色。"""
+    if insert_at is None:
+        response = ws.append_rows(rows, value_input_option=value_input_option,
+                                  insert_data_option="INSERT_ROWS")
+    else:
+        response = ws.insert_rows(rows, row=insert_at,
+                                  value_input_option=value_input_option,
+                                  inherit_from_before=insert_at > 2)
+    updated_range = response.get("updates", {}).get("updatedRange", response.get("updatedRange", ""))
+    match = re.search(r"!\$?[A-Z]+\$?(\d+):\$?[A-Z]+\$?(\d+)$", updated_range)
+    if not match:
+        raise ValueError("Cannot determine appended rows for batch coloring")
+    start_row, end_row = map(int, match.groups())
+    if start_row < 2 or end_row - start_row + 1 != len(rows):
+        raise ValueError("Unexpected appended range for batch coloring")
+
+    colors = [
+        {"red": 0.93, "green": 0.97, "blue": 1.0},
+        {"red": 1.0, "green": 0.98, "blue": 0.90},
+    ]
+    previous = None
+    same_date = continue_batch
+    if start_row > 2:
+        title = ws.title.replace("'", "''")
+        metadata = ws.spreadsheet.fetch_sheet_metadata(params={
+            "includeGridData": True,
+            "ranges": f"'{title}'!A{start_row - 1}",
+            "fields": "sheets(properties(sheetId),data(rowData(values(effectiveFormat,effectiveValue,formattedValue))))",
+        })
+        for sheet in metadata.get("sheets", []):
+            if sheet.get("properties", {}).get("sheetId") != ws.id:
+                continue
+            for grid in sheet.get("data", []):
+                for row in grid.get("rowData", []):
+                    for cell in row.get("values", []):
+                        if daily:
+                            value = cell.get("effectiveValue", {})
+                            date_serial = (datetime.strptime(rows[0][0], "%Y/%m/%d") - datetime(1899, 12, 30)).days
+                            if "numberValue" in value:
+                                same_date = int(value["numberValue"]) == date_serial
+                            else:
+                                previous_date = value.get("stringValue", cell.get("formattedValue", ""))
+                                same_date = tuple(map(int, re.findall(r"\d+", previous_date))) == tuple(map(int, re.findall(r"\d+", rows[0][0])))
+                        fmt = cell.get("effectiveFormat", {})
+                        previous = fmt.get("backgroundColorStyle", {}).get("rgbColor")
+                        if previous is None:
+                            previous = fmt.get("backgroundColor", {})
+    color = colors[0] if previous is None else max(
+        colors,
+        key=lambda c: sum((c[k] - previous.get(k, 0.0)) ** 2 for k in ("red", "green", "blue")),
+    )
+    # 同日沿用已採用的淡色；舊有深色不沿用。
+    if same_date and previous is not None:
+        for pale in colors:
+            if all(abs(pale[k] - previous.get(k, 0.0)) < 0.005 for k in pale):
+                color = pale
+                break
+    ws.spreadsheet.batch_update({"requests": [{"repeatCell": {
+        "range": {
+            "sheetId": ws.id,
+            "startRowIndex": start_row - 1,
+            "endRowIndex": end_row,
+            "startColumnIndex": 0,
+            "endColumnIndex": 11,
+        },
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": color,
+            "backgroundColorStyle": {"rgbColor": color},
+        }},
+        "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.backgroundColorStyle",
+    }}]})
+    return response
+
+
 def append_product_stock_in(
     product_code,
     serials,
@@ -224,10 +432,7 @@ def append_product_stock_in(
             used_rows=len(existing) + 1,
         )
 
-        ws.append_rows(
-            rows,
-            value_input_option="RAW",
-        )
+        insert_product_stock_batch(ws, rows)
 
         return True
 
@@ -278,6 +483,7 @@ def mark_product_sale(items, customer):
             updates = []
             fallback = []
             sale_date = product_sheet_date()
+            sale_time = sheet_sale_time(item.get("order_no"))
 
             for index, serial in enumerate(serials):
                 quantity_cell = (
@@ -298,6 +504,7 @@ def mark_product_sale(items, customer):
                             quantity_cell,
                         ]],
                     })
+                    updates.append({"range": f"L{row_no}", "values": [[sale_time]]})
                 else:
                     fallback.append([
                         "",
@@ -311,6 +518,7 @@ def mark_product_sale(items, customer):
                         "",
                         "",
                         "出庫時補列",
+                        sale_time,
                     ])
 
             if updates:
@@ -379,6 +587,8 @@ def clear_product_sale(items):
                         "range": f"E{row_no}:H{row_no}",
                         "values": [["", "", "", ""]],
                     })
+
+                    updates.append({"range": f"L{row_no}", "values": [[""]]})
 
             if updates:
                 ws.batch_update(
@@ -550,7 +760,12 @@ def sync_existing_inventory_to_product_sheets():
                     p.code,
                     s.serial,
                     s.batch_no,
-                    s.created_at
+                    s.created_at,
+                    (SELECT a.note
+                     FROM stock_actions a
+                     WHERE a.ref_no = s.batch_no
+                       AND a.action_type = 'stock_in'
+                     ORDER BY a.id DESC LIMIT 1) AS stock_note
                 FROM serials s
                 JOIN products p
                   ON p.id = s.product_id
@@ -581,6 +796,7 @@ def sync_existing_inventory_to_product_sheets():
             row["code"],
             row["batch_no"] or "現有庫存同步",
             product_sheet_date(row["created_at"]),
+            row.get("stock_note") or "",
         )
 
         groups.setdefault(
@@ -595,6 +811,7 @@ def sync_existing_inventory_to_product_sheets():
         code,
         batch_no,
         date_text,
+        stock_note,
     ), serials in groups.items():
         try:
             ws = get_product_sheet(code)
@@ -629,7 +846,7 @@ def sync_existing_inventory_to_product_sheets():
                         "",
                         "",
                         "",
-                        "現有庫存同步"
+                        (stock_note or "現有庫存同步")
                         if index == 0
                         else "",
                     ])
@@ -640,10 +857,7 @@ def sync_existing_inventory_to_product_sheets():
                     used_rows=len(existing) + 1,
                 )
 
-                ws.append_rows(
-                    new_rows,
-                    value_input_option="RAW",
-                )
+                insert_product_stock_batch(ws, new_rows)
 
             synced += len(missing)
 
@@ -675,12 +889,40 @@ QUICK_PRODUCT_ALIASES = {
     "大": "大卡",
     "小": "小卡",
     "500": "貝500",
-    "1000": "貝1000",
+    "1000": "MY1000",
+    "MY1000": "MY1000",
+    "MYCARD1000": "MY1000",
+    "M1000": "MY1000",
+    "一千": "MY1000",
+    "1千": "MY1000",
     "1490": "貝1490",
     "2990": "貝2990",
     "M3": "MY3000",
     "M5": "MY5000",
     "M1W": "MY1萬",
+    "MYCARD10000": "MY1萬",
+    "1萬": "MY1萬",
+    "10000": "MY1萬",
+    "一萬": "MY1萬",
+    "M1萬": "MY1萬",
+    "M10000": "MY1萬",
+    "M一萬": "MY1萬",
+    "MYCARD5000": "MY5000",
+    "5000": "MY5000",
+    "5千": "MY5000",
+    "五千": "MY5000",
+    "MYCARD3000": "MY3000",
+    "3000": "MY3000",
+    "3千": "MY3000",
+    "三千": "MY3000",
+    "貝殼幣1000": "貝1000",
+    "貝1000": "貝1000",
+    "貝殼幣1490": "貝1490",
+    "貝1490": "貝1490",
+    "貝殼幣2990": "貝2990",
+    "貝2990": "貝2990",
+    "貝殼幣500": "貝500",
+    "貝500": "貝500",
 }
 
 
@@ -886,9 +1128,7 @@ def reply(event, text):
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[
-                    TextMessage(text=text)
-                ],
+                messages=decorate_reply(event, [TextMessage(text=text)], globals()),
             )
         )
 
@@ -901,10 +1141,7 @@ def reply_messages(event, texts):
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[
-                    TextMessage(text=str(item)[:4900])
-                    for item in texts
-                ],
+                messages=decorate_reply(event, [TextMessage(text=str(item)[:4900]) for item in texts], globals()),
             )
         )
 
@@ -955,6 +1192,7 @@ def format_db_time(value):
 # ==================================================
 
 def find_product(conn, product_text):
+    product_text = resolve_quick_product_alias(product_text)
     with conn.cursor(
         cursor_factory=RealDictCursor
     ) as cur:
@@ -1035,17 +1273,16 @@ def append_sales_rows(
     只回傳 False，避免 Sheet 暫時故障造成庫存交易失敗。
     """
     try:
-        sales_sheet = get_sales_sheet()
-
         rows = []
 
+        sale_date = sales_date_tw()
         for item in items:
             rows.append([
-                sales_date_tw(),
+                sale_date,
                 customer or "",
                 item["quantity"],
-                "",
-                "",
+                float(item["unit_price"]) if item.get("unit_price") is not None else "",
+                float(item["sale_amount"]) if item.get("sale_amount") is not None else "",
                 "",
                 "",
                 item["product"]["code"],
@@ -1054,13 +1291,17 @@ def append_sales_rows(
                 "",
             ])
 
-        if rows:
-            sales_sheet.append_rows(
+        with PRODUCT_SHEET_WRITE_LOCK:
+            return append_sales_with_retry(
                 rows,
-                value_input_option="USER_ENTERED",
+                get_sheet=lambda: get_sales_sheet(customer),
+                append_batch=lambda ws, pending: append_colored_stock_batch(
+                    ws, pending, value_input_option="USER_ENTERED", daily=True,
+                ),
+                after_append=lambda ws, response: write_appended_sale_serials(
+                    ws, response, items,
+                ),
             )
-
-        return True
 
     except Exception as e:
         print(
@@ -1071,6 +1312,11 @@ def append_sales_rows(
 
 
 def mark_sales_rows_undone(order_nos):
+    results = [mark_sales_rows_undone_in_sheet(order_nos, ws) for ws in get_sales_sheets()]
+    return all(results)
+
+
+def mark_sales_rows_undone_in_sheet(order_nos, sales_sheet):
     """
     撤回出庫後，不刪除 Google Sheet 歷史紀錄，
     而是把對應訂單的「同步狀態」標記為「已撤回」。
@@ -1079,7 +1325,6 @@ def mark_sales_rows_undone(order_nos):
         return True
 
     try:
-        sales_sheet = get_sales_sheet()
         values = sales_sheet.get_all_values()
 
         if not values:
@@ -1220,7 +1465,7 @@ def get_sale_batch_by_ref(conn, order_or_batch_no):
             """
             SELECT
                 COALESCE(sale_batch_no, order_no) AS batch_no
-            FROM transactions
+            FROM active_transactions
             WHERE LOWER(order_no) = LOWER(%s)
                OR LOWER(COALESCE(sale_batch_no, order_no)) = LOWER(%s)
             ORDER BY id
@@ -1247,7 +1492,7 @@ def get_sale_batch_by_ref(conn, order_or_batch_no):
                 t.group_id,
                 p.code,
                 p.name
-            FROM transactions t
+            FROM active_transactions t
             JOIN products p
               ON p.id = t.product_id
             WHERE LOWER(COALESCE(t.sale_batch_no, t.order_no)) = LOWER(%s)
@@ -1273,7 +1518,7 @@ def find_latest_blank_sale_batch(conn, context_id):
                     BOOL_AND(
                         COALESCE(BTRIM(sold_to), '') = ''
                     ) AS all_blank
-                FROM transactions
+                FROM active_transactions
                 WHERE group_id = %s
                 GROUP BY COALESCE(sale_batch_no, order_no)
             )
@@ -1291,6 +1536,30 @@ def find_latest_blank_sale_batch(conn, context_id):
 
 
 def update_sales_sheet_customer(order_nos, customer):
+    sheets = get_sales_sheets()
+    results = [update_sales_sheet_customer_in_sheet(order_nos, customer, ws) for ws in sheets]
+    if not all(results):
+        return False
+    try:
+        destination = get_sales_sheet(customer)
+        targets = {str(value).strip() for value in order_nos}
+        for ws in sheets:
+            if ws.id == destination.id:
+                continue
+            values = ws.get_all_values()
+            if not values:
+                continue
+            col = values[0].index("訂單編號")
+            rows = [i for i, row in enumerate(values[1:], start=2)
+                    if len(row) > col and str(row[col]).strip() in targets]
+            move_sales_rows(ws, destination, rows)
+        return True
+    except Exception as e:
+        print("SALES SHEET CUSTOMER MOVE ERROR:", type(e).__name__)
+        return False
+
+
+def update_sales_sheet_customer_in_sheet(order_nos, customer, sales_sheet):
     """
     補單成功後，同步更新 Google Sheet「銷售紀錄」客戶欄。
     不碰其他人工欄位。
@@ -1299,7 +1568,6 @@ def update_sales_sheet_customer(order_nos, customer):
         return True
 
     try:
-        sales_sheet = get_sales_sheet()
         values = sales_sheet.get_all_values()
 
         if not values:
@@ -1597,13 +1865,19 @@ def get_transaction_for_sheet_sync(
                 sale_amount,
                 cost,
                 profit
-            FROM transactions
+            FROM active_transactions
             WHERE LOWER(order_no) = LOWER(%s)
             LIMIT 1
             """,
             (order_no,),
         )
 
+        current = cur.fetchone()
+        if current:
+            return current
+        cur.execute('''SELECT order_no,sold_to,quantity,unit_price,sale_amount,cost,profit
+            FROM manual_sales WHERE LOWER(order_no)=LOWER(%s) AND state='active' LIMIT 1''',
+            (order_no,))
         return cur.fetchone()
 
 
@@ -1637,9 +1911,59 @@ def update_transaction_from_sheet(
                 order_no,
             ),
         )
+        if cur.rowcount == 0:
+            cur.execute('''UPDATE manual_sales SET sold_to=%s,unit_price=%s,
+                sale_amount=%s,cost=%s,profit=%s
+                WHERE LOWER(order_no)=LOWER(%s) AND state='active' ''',
+                (customer,unit_price,sale_amount,cost,profit,order_no))
 
 
-def sync_sales_sheet_to_supabase():
+def sync_sales_sheet_to_supabase(context_id=None, operator=None):
+    sheets = get_sales_sheets()
+    # 同一訂單不可在兩頁同時回寫不同資料。
+    seen = set()
+    for ws in sheets:
+        values = ws.get_all_values()
+        if not values:
+            continue
+        if "訂單編號" not in values[0]:
+            return {"ok": False, "reason": "missing_headers", "missing_headers": ["訂單編號"]}
+        col = values[0].index("訂單編號")
+        for row in values[1:]:
+            ref = str(row[col]).strip().lower() if len(row) > col else ""
+            if ref:
+                if ref in seen:
+                    raise ValueError("Duplicate sales order across sheets")
+                seen.add(ref)
+    total = {"ok": True, "created": 0, "updated": 0, "unchanged": 0, "not_found": 0,
+             "skipped_undone": 0, "invalid": []}
+    for ws in sheets:
+        if context_id:
+            manual = import_manual_orders(ws, get_db, context_id, operator, find_product)
+            total["created"] += manual["created"]
+            total["invalid"].extend(f"{ws.title}：{message}" for message in manual["invalid"])
+        result = sync_sales_sheet_to_supabase_in_sheet(ws)
+        if not result["ok"]:
+            return result
+        for key in ("updated", "unchanged", "not_found", "skipped_undone"):
+            total[key] += result[key]
+        total["invalid"].extend(f"{ws.title}：{message}" for message in result["invalid"])
+    # 人工將客戶改為軒／其他客戶時，也跟著調整所在分頁。
+    if len(sheets) == 2:
+        for ws in sheets:
+            values = ws.get_all_values()
+            if not values:
+                continue
+            col = values[0].index("客戶")
+            rows = [i for i, row in enumerate(values[1:], start=2)
+                    if len(row) > col and
+                    ((str(row[col]).strip() == "軒") != (ws.title == XUAN_SALES_SHEET_NAME))]
+            destination = sheets[1] if ws.title == SALES_SHEET_NAME else sheets[0]
+            move_sales_rows(ws, destination, rows)
+    return total
+
+
+def sync_sales_sheet_to_supabase_in_sheet(sales_sheet):
     """
     讀取 Google Sheet「銷售紀錄」，將人工修改同步回 Supabase。
 
@@ -1651,7 +1975,6 @@ def sync_sales_sheet_to_supabase():
     - 完整 -> 已同步
     - 還有空白 -> 待補
     """
-    sales_sheet = get_sales_sheet()
     values = sales_sheet.get_all_values()
 
     if not values:
@@ -2024,6 +2347,79 @@ def parse_quick_sale_line(line):
     }
 
 
+def parse_customer_sale_message(raw_text):
+    """單品客戶指令，或首行 /客戶姓名加上多行快速商品。"""
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if len(lines) > 1 and re.match(r"^/(?:客人|客戶)(?:\s|$)", lines[0]):
+        header = lines[0][1:].split(maxsplit=1)
+        if len(header) != 2 or not header[1].strip():
+            return {"ok": False, "reason": "format"}
+        result = parse_quick_sale_message("\n".join(lines[1:]))
+        if result is None:
+            return {"ok": False, "reason": "format"}
+        if result.get("ok"):
+            result["customer"] = header[1].strip()
+        return result
+    if not lines or not lines[0].startswith("/"):
+        return None
+
+    parts = lines[0][1:].split()
+    if not parts:
+        return None
+
+    customer = parts[0]
+    # 正式指令優先，避免把日期查詢、補單等誤認為出庫。
+    reserved = {
+        "我的ID", "加權限", "刪權限", "權限名單", "測試", "查帳",
+        "庫存", "查庫存", "入庫", "整理", "逗", "發", "出",
+        "撤回", "補上一單", "補單", "同步現有庫存", "同步補單",
+        "查銷貨", "查區間銷貨", "區間銷貨", "銷貨",
+        "查進貨", "查區間進貨", "區間進貨", "進貨",
+        "今日銷售", "今天銷售", "指令",
+    }
+    if customer in reserved:
+        return None
+
+    if len(lines) > 1:
+        # 商品快速指令仍交回原多品項流程，不能當成客戶名稱。
+        first_item = parse_quick_sale_line(lines[0])
+        if len(parts) != 1 or (first_item and first_item.get("ok")):
+            return None
+        result = parse_quick_sale_message("\n".join(lines[1:]))
+        if result is None:
+            return {"ok": False, "reason": "format"}
+        if result.get("ok"):
+            result["customer"] = customer
+        return result
+
+    if len(parts) not in (2, 3):
+        return None
+
+    if len(parts) == 3:
+        product = resolve_quick_product_alias(parts[1])
+        if not parts[2].isdigit():
+            return {"ok": False, "reason": "format"}
+        quantity = int(parts[2])
+    else:
+        # 保留 /客戶 +金額、/客戶 -金額 的記帳語意。
+        if parts[1].startswith(("+", "-")):
+            return None
+        item = parse_quick_sale_line("/" + parts[1])
+        if not item or not item.get("ok"):
+            return None
+        product = item["product_text"]
+        quantity = item["quantity"]
+
+    if quantity <= 0 or quantity > 500:
+        return {"ok": False, "reason": "quantity"}
+    return {
+        "ok": True,
+        "customer": customer,
+        "items": [{"product_text": product, "quantity": quantity}],
+        "total_quantity": quantity,
+    }
+
+
 def parse_quick_sale_message(raw_text):
     """
     只要整則訊息的非空白行都以 / 開頭，
@@ -2139,15 +2535,15 @@ def format_labeled_pairs(raw_text):
         # 一筆資料分成兩行，筆與筆之間用空白行分隔。
         #
         # 例如：
-        # MAEVLM000247
+        # MC0000000001
         # TMDWARHWW97A
         #
-        # MAEVLM000256
+        # MC0000000001
         # SRN8VPDYFW7Q
         #
         # 會整理成：
-        # MAEVLM000247 TMDWARHWW97A
-        # MAEVLM000256 SRN8VPDYFW7Q
+        # MC0000000001 FAKEPIN00001
+        # MC0000000001 FAKEPIN00001
 
         raw_lines = body.splitlines()
 
@@ -2439,9 +2835,7 @@ def sell_multiple_items(
                 prepared,
                 start=1,
             ):
-                child_order_no = (
-                    f"{sale_batch_no}-{index:02d}"
-                )
+                child_order_no = f'{sale_batch_no}-{index:02d}'
 
                 serial_ids = [
                     row["id"]
@@ -2745,6 +3139,76 @@ def sell_serials(
 # 入庫貼上格式整理
 # ==================================================
 
+def parse_supplier_stock_in(raw_lines, product_text=""):
+    """辨識廠商文字；只由明確的 /入庫 指令呼叫，不處理圖片。"""
+    lines = [line.strip() for line in raw_lines[1:] if line.strip()]
+    if not lines:
+        return None
+    shell = re.fullmatch(r"貝殼(?:幣)?\s*(500|1000|1490|2990)\s*[|｜]\s*(\d+)\s*張", lines[0])
+    if shell:
+        product = "貝" + shell[1]
+        if product_text and resolve_quick_product_alias(product_text) != product:
+            raise ValueError("入庫商品與廠商標題不同，請確認商品。")
+        serials = lines[1:]
+        total = int(shell[2])
+        if total <= 0 or len(serials) != total:
+            raise ValueError("實際卡片張數與標題不符，請複製完整內容。")
+        if any(not re.fullmatch(r"[0-9]{16}", serial) for serial in serials):
+            raise ValueError("貝殼幣序號格式不正確，應為每行一組 16 碼數字序號。")
+        if len(set(serials)) != len(serials):
+            raise ValueError("本次有重複序號，請確認後再入庫。")
+        return {"product": product, "serials": serials, "total": total, "segment": None}
+    if lines[0].startswith("貝殼"):
+        raise ValueError("請保留「貝殼幣 1490｜45 張」格式的商品與張數標題。")
+    diamond = re.fullmatch(r"藍鑽\s*(大卡|小卡|一萬|三千)\s*[|｜]\s*(\d+)\s*張", lines[0])
+    if diamond:
+        product = "大卡" if diamond[1] in ("大卡", "一萬") else "小卡"
+        if product_text and resolve_quick_product_alias(product_text) != product:
+            raise ValueError("入庫商品與廠商標題不同，請確認商品。")
+        serials = lines[1:]
+        if int(diamond[2]) <= 0 or len(serials) != int(diamond[2]):
+            raise ValueError("實際卡片張數與標題不符，請複製完整內容。")
+        if any(not re.fullmatch(r"[A-Z0-9]{20}", serial) for serial in serials):
+            raise ValueError("藍鑽序號格式不正確，應為每行一組 20 碼英數序號。")
+        if len(set(serials)) != len(serials):
+            raise ValueError("本次有重複序號，請確認後再入庫。")
+        return {"product": product, "serials": serials, "total": int(diamond[2]), "segment": None}
+    if lines[0].startswith("藍鑽"):
+        raise ValueError("請保留「藍鑽大卡｜10 張」或「藍鑽小卡｜10 張」格式的標題。")
+    header = re.fullmatch(r"My\s*Card\s*(1000|3000|5000|10000)\s*[|｜]\s*(\d+)\s*張", lines[0], re.I)
+    if not header:
+        if re.match(r"My\s*Card", lines[0], re.I) or not product_text:
+            raise ValueError("請保留廠商的 MyCard 商品與張數標題。")
+        return None
+    product = resolve_quick_product_alias("MYCARD" + header[1])
+    if product_text and resolve_quick_product_alias(product_text) != product:
+        raise ValueError("入庫商品與廠商標題不同，請確認商品。")
+    total = int(header[2])
+    lines = lines[1:]
+    segment = None
+    if lines and re.fullmatch(r"第\s*\d+\s*[/／]\s*\d+\s*段", lines[0]):
+        segment = tuple(map(int, re.findall(r"\d+", lines.pop(0))))
+        if not 1 <= segment[0] <= segment[1]:
+            raise ValueError("廠商分段編號不正確。")
+    elif lines and lines[0].startswith("第"):
+        raise ValueError("無法辨識分段標題，請使用「第 1／3 段」或「第 1/3 段」。")
+    if not lines or len(lines) % 2:
+        raise ValueError("卡號與密碼未成對，請複製完整文字（長訊息請先點顯示全部）。")
+    pairs = []
+    seen = set()
+    for index in range(0, len(lines), 2):
+        serial, pin = lines[index:index + 2]
+        if not re.fullmatch(r"MC[A-Z0-9]{10}", serial) or not re.fullmatch(r"[A-Z0-9]{12}", pin):
+            raise ValueError("卡號或密碼格式不正確，請確認複製內容完整。")
+        if serial in seen:
+            raise ValueError("本段有重複卡號，請確認後再入庫。")
+        seen.add(serial)
+        pairs.append(serial + " " + pin)
+    if total <= 0 or len(pairs) > total or (not segment and len(pairs) != total):
+        raise ValueError("實際卡片張數與標題不符，請複製完整內容。")
+    return {"product": product, "serials": pairs, "total": total, "segment": segment}
+
+
 def parse_stock_in_serial_values(raw_lines):
     """
     支援兩種貼法：
@@ -2754,15 +3218,15 @@ def parse_stock_in_serial_values(raw_lines):
        ABC002
 
     2) 一筆序號分成兩行，筆與筆之間有空白行
-       MAEVLM000247
-       TMDWARHWW97A
+       MC0000000001
+       FAKEPIN00001
 
-       MAEVLM000256
-       SRN8VPDYFW7Q
+       MC0000000001
+       FAKEPIN00001
 
        會自動變成：
-       "MAEVLM000247 TMDWARHWW97A"
-       "MAEVLM000256 SRN8VPDYFW7Q"
+       "MC0000000001 FAKEPIN00001"
+       "MC0000000001 FAKEPIN00001"
 
     規則：
     - 有空白行分組時，每一組內的多行會用一個空格合併。
@@ -2815,8 +3279,11 @@ def stock_in_serials(
     context_id,
     product_text,
     serial_values,
+    note="",
+    transaction=None,
 ):
-    conn = get_db()
+    owns_connection = transaction is None
+    conn = get_db() if owns_connection else transaction
 
     try:
         product = find_product(
@@ -2825,14 +3292,14 @@ def stock_in_serials(
         )
 
         if not product:
-            conn.rollback()
+            if owns_connection: conn.rollback()
 
             return {
                 "ok": False,
                 "reason": "product_not_found",
             }
 
-        batch_no = create_batch_no()
+        batch_no = allocate_stock_batch_no(conn, product['code'])
 
         added = []
         duplicates = []
@@ -2884,14 +3351,16 @@ def stock_in_serials(
                         group_id,
                         action_type,
                         ref_no,
-                        operator
+                        operator,
+                        note
                     )
-                    VALUES (%s, 'stock_in', %s, %s)
+                    VALUES (%s, 'stock_in', %s, %s, %s)
                     """,
                     (
                         context_id,
                         batch_no,
                         operator,
+                        note or None,
                     ),
                 )
 
@@ -2907,7 +3376,7 @@ def stock_in_serials(
 
             stock = cur.fetchone()["count"]
 
-        conn.commit()
+        if owns_connection: conn.commit()
 
         return {
             "ok": True,
@@ -2919,11 +3388,11 @@ def stock_in_serials(
         }
 
     except Exception:
-        conn.rollback()
+        if owns_connection: conn.rollback()
         raise
 
     finally:
-        conn.close()
+        if owns_connection: conn.close()
 
 
 # ==================================================
@@ -2997,10 +3466,13 @@ def undo_last_action(
                     JOIN products p
                       ON p.id = s.product_id
                     WHERE s.batch_no = %s
+                      AND (%s = FALSE OR s.created_at = %s)
                     ORDER BY s.id
                     FOR UPDATE OF s
                     """,
-                    (action["ref_no"],),
+                    (action["ref_no"],
+                     bool(re.fullmatch(r'.+-\d{4}-\d{3,}', action["ref_no"] or '')),
+                     action["created_at"]),
                 )
 
                 rows = cur.fetchall()
@@ -3133,7 +3605,7 @@ def undo_last_action(
                         t.product_id,
                         p.code,
                         p.name
-                    FROM transactions t
+                    FROM active_transactions t
                     JOIN products p
                       ON p.id = t.product_id
                     WHERE COALESCE(
@@ -3328,7 +3800,7 @@ def get_sales_by_date_range(
                             t.order_no
                         )
                     )::bigint AS orders
-                FROM transactions t
+                FROM active_transactions t
                 JOIN products p
                   ON p.id = t.product_id
                 WHERE t.created_at >= %s::date
@@ -3361,7 +3833,7 @@ def get_sales_by_date_range(
                             order_no
                         )
                     )::bigint AS total_orders
-                FROM transactions
+                FROM active_transactions
                 WHERE created_at >= %s::date
                   AND created_at < (
                         %s::date + interval '1 day'
@@ -3580,7 +4052,7 @@ def get_today_sales(context_id):
                     p.code,
                     SUM(t.quantity)::bigint AS quantity,
                     COUNT(DISTINCT COALESCE(t.sale_batch_no, t.order_no))::bigint AS orders
-                FROM transactions t
+                FROM active_transactions t
                 JOIN products p
                   ON p.id = t.product_id
                 WHERE t.group_id = %s
@@ -3611,7 +4083,7 @@ def get_today_sales(context_id):
                 SELECT
                     COALESCE(SUM(quantity), 0)::bigint AS total_quantity,
                     COUNT(DISTINCT COALESCE(sale_batch_no, order_no))::bigint AS total_orders
-                FROM transactions
+                FROM active_transactions
                 WHERE group_id = %s
                   AND created_at >= date_trunc(
                         'day',
@@ -3661,7 +4133,7 @@ def get_order(order_no):
                     t.created_at,
                     p.code,
                     p.name
-                FROM transactions t
+                FROM active_transactions t
                 JOIN products p
                   ON p.id = t.product_id
                 WHERE LOWER(t.order_no)
@@ -3674,7 +4146,14 @@ def get_order(order_no):
             order = cur.fetchone()
 
             if not order:
-                return None
+                cur.execute('''SELECT order_no,sold_to,quantity,operator,created_at,
+                    product_code AS code,product_code AS name FROM manual_sales
+                    WHERE LOWER(order_no)=LOWER(%s) AND state='active' LIMIT 1''', (order_no,))
+                order = cur.fetchone()
+                if not order:
+                    return None
+                order['serials'] = ['手填訂單（不扣庫存）']
+                return order
 
             cur.execute(
                 """
@@ -3752,6 +4231,11 @@ def handle_message(event):
     # 所有機器人指令都必須以 / 開頭。
     # 一般聊天沒有 /，機器人完全不回應。
     if not original_text.startswith("/"):
+        if os.getenv("GROUP_SELF_SERVICE_ENABLED", "0") == "1":
+            try:
+                handle_ui_text(event, globals())
+            except Exception as exc:
+                print("BOT_UI_INPUT_ERROR", type(exc).__name__)
         return
 
     # 舊有指令處理邏輯維持不變：
@@ -3768,6 +4252,14 @@ def handle_message(event):
     context_id = get_context_id(event)
 
     try:
+
+        # Optional group credit flow. Default off; a registered group must never
+        # fall through to legacy sales or generic undo and bypass its debt limit.
+        if os.getenv("GROUP_SELF_SERVICE_ENABLED", "0") == "1":
+            if handle_ui_text(event, globals()):
+                return
+            if handle_group_credit(event, globals()):
+                return
 
         # ------------------------------------------
         # 查自己的 LINE User ID
@@ -4111,23 +4603,34 @@ def handle_message(event):
         # 也支援「一筆分兩行、筆與筆之間空一行」
         # ------------------------------------------
 
-        if text.startswith("入庫 "):
+        if text == "入庫" or text.startswith("入庫 ") or text.startswith("入庫\n"):
 
             raw_lines = raw_text.splitlines()
+            try:
+                raw_lines, stock_note = extract_stock_in_note(raw_lines)
+            except ValueError as error:
+                reply(event, "⚠️ 未入庫：" + str(error))
+                return
 
             first_line = (
                 raw_lines[0]
                 .strip()
             )
 
-            product_text = (
-                first_line[len("入庫 "):]
-                .strip()
-            )
+            product_text = first_line[len("入庫"):].strip()
+
+            try:
+                supplier = parse_supplier_stock_in(raw_lines, product_text)
+            except ValueError as error:
+                reply(event, "⚠️ 未入庫：" + str(error))
+                return
 
             serial_values = parse_stock_in_serial_values(
                 raw_lines
             )
+            if supplier:
+                product_text = supplier["product"]
+                serial_values = supplier["serials"]
 
             if (
                 not product_text
@@ -4151,6 +4654,7 @@ def handle_message(event):
                 context_id,
                 product_text,
                 serial_values,
+                note=stock_note,
             )
 
             if not result["ok"]:
@@ -4170,6 +4674,7 @@ def handle_message(event):
                 result["product"]["code"],
                 result["added"],
                 batch_no=result["batch_no"],
+                note=stock_note,
             )
 
             reply(
@@ -4181,8 +4686,11 @@ def handle_message(event):
                 f"新增：{len(result['added'])} 張\n"
                 f"重複：{len(result['duplicates'])} 張\n"
                 f"目前庫存：{result['stock']} 張"
+                + (f"\n備註：{stock_note}" if stock_note else "")
+                + (f"\n廠商第 {supplier['segment'][0]}/{supplier['segment'][1]} 段（本次只處理本段，請逐段貼上）"
+                   if supplier and supplier['segment'] else "")
                 + (
-                    "\n⚠️ 商品分頁暫時未同步"
+                    "\n⚠️ 商品分頁資料或批次上色未完成，請檢查分頁；勿重複入庫"
                     if not product_sheet_ok
                     else ""
                 )
@@ -4228,9 +4736,9 @@ def handle_message(event):
                     "2. 每筆兩行，中間空一行\n\n"
                     "例如：\n"
                     "/整理\n"
-                    "MAEVLM000247\n"
+                    "MC0000000001\n"
                     "TMDWARHWW97A\n\n"
-                    "MAEVLM000256\n"
+                    "MC0000000001\n"
                     "SRN8VPDYFW7Q"
                 )
                 return
@@ -4256,7 +4764,7 @@ def handle_message(event):
                     "⚠️ /逗 需要每行有兩欄資料\n\n"
                     "例如：\n"
                     "/逗\n"
-                    "MFXMTA003797    GP3TX8F8QTUV"
+                    "MC0000000001    FAKEPIN00001"
                     + (
                         f"\n\n看不懂這行：{bad_line}"
                         if bad_line
@@ -4283,9 +4791,11 @@ def handle_message(event):
         # 多行一起貼 = 同一筆出庫
         # ------------------------------------------
 
-        quick_sale = parse_quick_sale_message(
+        quick_sale = parse_customer_sale_message(
             original_raw_text
         )
+        if quick_sale is None:
+            quick_sale = parse_quick_sale_message(original_raw_text)
 
         if quick_sale is not None:
 
@@ -4315,16 +4825,19 @@ def handle_message(event):
                     event,
                     "⚠️ 快速出庫格式看不懂\n\n"
                     "例如：\n"
+                    "/軒 大卡 10\n"
+                    "/軒 大10\n"
                     "/大10\n"
                     "/小*20\n"
                     "/1490*60"
                 )
                 return
 
+            customer = quick_sale.get("customer", "")
             result = sell_multiple_items(
                 operator,
                 context_id,
-                "",
+                customer,
                 quick_sale["items"],
             )
 
@@ -4369,19 +4882,21 @@ def handle_message(event):
                     return
 
             sheet_sync_ok = append_sales_rows(
-                "",
+                customer,
                 result["items"],
             )
 
             product_sheet_ok = mark_product_sale(
                 result["items"],
-                "",
+                customer,
             )
 
             summary_lines = [
                 "✅ 出庫完成",
                 "",
             ]
+            if customer:
+                summary_lines.extend([f"客戶：《{customer}》", ""])
 
             for item in result["items"]:
                 summary_lines.append(
@@ -4397,7 +4912,7 @@ def handle_message(event):
             if not sheet_sync_ok:
                 summary_lines.extend([
                     "",
-                    "⚠️ 銷售紀錄暫時未寫入 Google Sheet",
+                    "⚠️ 銷售紀錄資料或每日上色未完成，請檢查 Google Sheet；勿重複出庫",
                 ])
 
             if not product_sheet_ok:
@@ -4650,7 +5165,7 @@ def handle_message(event):
                         f"{summary_line}\n"
                         f"（訂單編號{result['order_no']}）"
                         + (
-                            "\n⚠️ 銷售紀錄暫時未寫入 Google Sheet"
+                            "\n⚠️ 銷售紀錄資料或每日上色未完成，請檢查 Google Sheet；勿重複出庫"
                             if not sheet_sync_ok
                             else ""
                         )
@@ -4999,7 +5514,7 @@ def handle_message(event):
 
         if text == "同步補單":
 
-            result = sync_sales_sheet_to_supabase()
+            result = sync_sales_sheet_to_supabase(context_id, operator)
 
             if not result["ok"]:
 
@@ -5024,6 +5539,7 @@ def handle_message(event):
 
             lines = [
                 "✅ 同步補單完成",
+                f"新增手填訂單（不扣庫存）：{result.get('created', 0)} 筆",
                 f"有變更：{result['updated']} 筆",
                 f"無變更：{result['unchanged']} 筆",
             ]
@@ -5334,7 +5850,17 @@ def handle_message(event):
                 "/入庫 MyCard1000\n"
                 "序號1\n"
                 "序號2\n\n"
-                "完整出庫：/發 小美 MyCard1000 5\n"
+                "入庫備註：/入庫 1000 #EP\n"
+                "#後為該批供貨來源，序號從下一行開始\n\n"
+                "客戶出庫：/小美 大卡 10\n"
+                "別名出庫：/小美 大 10 或 /小美 大10\n"
+                "商品別名：1萬／一萬／10000／M1萬／M10000／M一萬\n"
+                "5000／5千／五千／M5；3000／3千／三千／M3\n"
+                "MY1000：1000／MY1000／M1000／一千／1千\n"
+                "大／小；貝1000 請用 貝1000（1000 改為 MY1000）\n"
+                "廠商文字入庫：第一行 /入庫，下一行起貼完整廠商訊息\n"
+                "客戶出庫一次 1～500 張\n"
+                "原完整出庫：/發 小美 大卡 5（1～20 張）\n"
                 "快速出庫：/大10 或 /大*10\n"
                 "多品項：每行一個，例如 /大10、/小20\n\n"
                 "撤回群組上一筆：/撤回\n"
@@ -5404,3 +5930,16 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
     )
+
+
+
+@handler.add(PostbackEvent)
+def handle_group_credit_button(event):
+    if os.getenv("GROUP_SELF_SERVICE_ENABLED", "0") != "1":
+        return
+    try:
+        if not handle_ui_postback(event, globals()):
+            handle_group_credit_postback(event, globals())
+    except Exception as exc:
+        print("GROUP_CREDIT_POSTBACK_ERROR", type(exc).__name__)
+        reply(event, "⚠️ 處理未完成，請先查核訂單與群組欠款；勿另外重複減帳。")
