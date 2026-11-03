@@ -41,14 +41,5 @@ def merge_actions(primary,navigation):
     return result
 
 def decorate_reply(event,messages,ns,primary=()):
-    if not messages:return messages
-    try:
-        navigation=navigation_actions(event,ns)
-        if navigation is None:return messages
-        from linebot.v3.messaging import QuickReply,QuickReplyItem,PostbackAction
-        actions=merge_actions(primary,navigation)
-        messages[-1].quick_reply=QuickReply(items=[QuickReplyItem(action=PostbackAction(label=label,data=data)) for label,data in actions])
-    except Exception:
-        # A failed menu lookup must never prevent delivery of already allocated cards.
-        pass
+    """Text-only release: do not query UI roles or attach any quick replies."""
     return messages

@@ -4,6 +4,7 @@
 !app.py
 !bot_ui.py
 !bottom_quick.py
+!text_commands.py
 !daily_report.py
 !group_credit.py
 !group_credit_handler.py
