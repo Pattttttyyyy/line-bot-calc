@@ -5,7 +5,10 @@ class ControlError(RuntimeError):pass
 
 def run(args):
     p=subprocess.run(args,capture_output=True,text=True)
-    if p.returncode:raise ControlError('Command failed: '+args[0]+' (details withheld from public logs)')
+    if p.returncode:
+        detail=(p.stdout+p.stderr).lower()
+        category='permission_denied' if any(x in detail for x in ('permission_denied','permission denied','does not have permission','403','denied:')) else 'not_found' if 'not found' in detail else 'command_failed'
+        raise ControlError(' '.join(args[:3])+': '+category)
     return p.stdout
 
 class Control:
@@ -52,11 +55,14 @@ class Control:
         if self.active(old)!=expected or old['status']['latestReadyRevisionName']!=expected:
             raise ControlError('Production version changed; obtain a new approval')
         self.health(old)
+        print('CLOUD_PHASE preflight_passed',flush=True)
         before=self.template_without_image(old)
         host=self.region+'-docker.pkg.dev'
         tag=host+'/'+self.project+'/'+self.repository+'/line-bot:git-'+sha
         run(['gcloud','auth','configure-docker',host,'--quiet'])
+        print('CLOUD_PHASE image_build',flush=True)
         run(['docker','build','--label','org.opencontainers.image.revision='+sha,'--tag',tag,'.'])
+        print('CLOUD_PHASE image_push',flush=True)
         run(['docker','push',tag])
         artifact=self.g('artifacts','docker','images','describe',tag)
         digest=artifact['image_summary']['digest']
@@ -67,6 +73,7 @@ class Control:
         if self.active(now)!=expected or self.template_without_image(now)!=before:
             raise ControlError('Production settings changed during build')
         suffix='gh-'+run_id;revision=self.service+'-'+suffix
+        print('CLOUD_PHASE staging_revision',flush=True)
         run(['gcloud','run','deploy',self.service,'--project='+self.project,'--region='+self.region,
              '--image='+image,'--revision-suffix='+suffix,'--no-traffic','--quiet'])
         staged=self.service_state();self.assert_limits(staged)
@@ -74,6 +81,7 @@ class Control:
             raise ControlError('Staging did not preserve previous traffic')
         if self.template_without_image(staged)!=before:raise ControlError('Runtime configuration changed; traffic not switched')
         if staged['spec']['template']['spec']['containers'][0]['image']!=image:raise ControlError('Image mismatch')
+        print('CLOUD_PHASE switching_traffic',flush=True)
         run(['gcloud','run','services','update-traffic',self.service,'--project='+self.project,
              '--region='+self.region,'--to-revisions='+revision+'=100','--quiet'])
         try:
@@ -99,6 +107,9 @@ def main():
 
 if __name__=='__main__':
     try:main()
+    except ControlError as e:
+        print('CLOUD_OPERATION_STOPPED',str(e))
+        sys.exit(1)
     except Exception as e:
         print('CLOUD_OPERATION_STOPPED',type(e).__name__)
         sys.exit(1)
