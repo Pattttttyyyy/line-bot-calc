@@ -26,7 +26,7 @@ Google Cloud網頁無法在GPT雲端瀏覽器開啟時，可改由GitHub Actions
 ## 測試
 
 Python 3.11 或 3.12：`python -X utf8 run_offline_tests.py`。
-這組 93 項測試不需正式憑證，不會連正式資料庫、Google Sheets 或 LINE。
+這組 102 項測試不需正式憑證，不會連正式資料庫、Google Sheets 或 LINE。
 官方 LINE SDK 序列化另以 `python -X utf8 -m unittest -q test_line_buttons.py` 驗證，所有發送介面皆 mock。
 
 PostgreSQL 整合測試須在隔離 Linux 測試環境執行 `python run_isolated_tests.py`。
@@ -35,6 +35,11 @@ PostgreSQL 整合測試須在隔離 Linux 測試環境執行 `python run_isolate
 
 禁止直接 import app.py 當離線檢查：啟動程式可能讀取真實服務。
 requirements.txt 保留正式版本原內容；尚未建立相依套件版本鎖檔，重建映像不保證套件版本與舊映像完全相同。
+
+## 客人自助拿卡記帳小卡
+
+自助群拿卡成功後，卡片資料仍以可複製文字傳送，最後附上無按鈕Flex記帳小卡：商品計算式、原欠款、本次金額、目前欠款、剩餘額度及訂單編號。沿用已提交的同一筆群組帳款，不另加帳，不影響一般管理群發卡。帳況標示為本筆完成時快照。
+小卡本機建構失敗時改回原文字摘要；API發送逾時則保留既有uncertain狀態，不重發、不退款。
 
 ## 維護
 
@@ -52,5 +57,5 @@ daily_report.py 是獨立每日報表工作的程式，不代表每次機器人�
 - 新增維護文件與測試入口，擴充 Git／Docker 排除規則。
 - migration*.sql 僅保存已存在功能的結構參考，不是完整正式資料庫備份，也不可在正式環境自動執行。
 
-雲端發佈、查核與部署流程已啟用，見 DEPLOYMENT_SETUP.md、.github/workflows/cloud-control.yml、ops/。另有17項無憑證管道測試：`python -X utf8 -m unittest -q test_cloud_control.py`；連同93單元、6官方SDK mock、48隔離PostgreSQL，共164項。
+雲端發佈、查核與部署流程已啟用，見 DEPLOYMENT_SETUP.md、.github/workflows/cloud-control.yml、ops/。另有17項無憑證管道測試：`python -X utf8 -m unittest -q test_cloud_control.py`；連同102單元、9官方SDK mock、48隔離PostgreSQL，共176項。
 不自動修改資料庫結構，不發LINE測試訊息；保留原群組、Secret Manager與Webhooks設定。
