@@ -11,11 +11,14 @@ NEW='line-bot-calc-gh-123-1'
 DIGEST='sha256:'+'b'*64
 IMAGE='asia-east1-docker.pkg.dev/example-project/line-bot/line-bot@'+DIGEST
 
-def state(active=OLD,latest=OLD,image='previous-image'):
+def state(active=OLD,latest=OLD,image='previous-image',created=None):
     return {'spec':{'template':{'metadata':{'annotations':{'autoscaling.knative.dev/maxScale':'1'}},
                 'spec':{'serviceAccountName':'runtime@example.invalid','containers':[{'image':image,
                 'resources':{'limits':{'cpu':'1','memory':'512Mi'}},'env':[{'name':'PRIVATE','value':'FAKE_PRIVATE_VALUE'}]}]}}},
-            'status':{'traffic':[{'revisionName':active,'percent':100}],'latestReadyRevisionName':latest,'url':'https://example.a.run.app'}}
+            'status':{'traffic':[{'revisionName':active,'percent':100}],'latestReadyRevisionName':latest,'latestCreatedRevisionName':created or latest,'url':'https://example.a.run.app'}}
+
+def cloud_result():
+    return {'image_summary':{'digest':DIGEST},'status':{'conditions':[{'type':'Ready','status':'True','reason':'Retired'}]}}
 
 class RequestTests(unittest.TestCase):
     def test_default_check(self):self.assertEqual(validate({},SHA)['mode'],'check')
@@ -49,8 +52,8 @@ class ControlTests(unittest.TestCase):
             with self.assertRaises(ControlError):self.c.deploy(SHA,'line-bot-calc-other','123-1')
             run.assert_not_called()
     def test_image_only_release_and_no_traffic_staging(self):
-        states=[state(),state(),state(latest=NEW,image=IMAGE),state(active=NEW,latest=NEW,image=IMAGE)]
-        with patch.object(self.c,'service_state',side_effect=states),patch.object(self.c,'health',return_value=200),patch.object(self.c,'g',return_value={'image_summary':{'digest':DIGEST}}),patch('ops.cloud_control.run',return_value='') as run:
+        states=[state(),state(),state(latest=OLD,created=NEW,image=IMAGE),state(active=NEW,latest=NEW,image=IMAGE)]
+        with patch.object(self.c,'service_state',side_effect=states),patch.object(self.c,'health',return_value=200),patch.object(self.c,'g',return_value=cloud_result()),patch('ops.cloud_control.run',return_value='') as run:
             out=self.c.deploy(SHA,OLD,'123-1')
         self.assertEqual(out['active_revision'],NEW)
         commands=[x.args[0] for x in run.call_args_list]
@@ -59,14 +62,19 @@ class ControlTests(unittest.TestCase):
         self.assertFalse(any('secrets' in a or 'jobs' in a for a in commands))
         self.assertNotIn('FAKE_PRIVATE_VALUE',json.dumps(out))
     def test_runtime_change_stops_before_switch(self):
-        staged=state(latest=NEW,image=IMAGE);staged['spec']['template']['spec']['containers'][0]['env']=[]
-        with patch.object(self.c,'service_state',side_effect=[state(),state(),staged]),patch.object(self.c,'health',return_value=200),patch.object(self.c,'g',return_value={'image_summary':{'digest':DIGEST}}),patch('ops.cloud_control.run',return_value='') as run:
+        staged=state(latest=OLD,created=NEW,image=IMAGE);staged['spec']['template']['spec']['containers'][0]['env']=[]
+        with patch.object(self.c,'service_state',side_effect=[state(),state(),staged]),patch.object(self.c,'health',return_value=200),patch.object(self.c,'g',return_value=cloud_result()),patch('ops.cloud_control.run',return_value='') as run:
             with self.assertRaises(ControlError):self.c.deploy(SHA,OLD,'123-1')
         self.assertFalse(any('update-traffic' in x.args[0] for x in run.call_args_list))
     def test_failed_health_restores_previous_traffic(self):
-        with patch.object(self.c,'service_state',side_effect=[state(),state(),state(latest=NEW,image=IMAGE),state(active=NEW,latest=NEW,image=IMAGE)]),patch.object(self.c,'health',side_effect=[200,ControlError('fake')]),patch.object(self.c,'g',return_value={'image_summary':{'digest':DIGEST}}),patch('ops.cloud_control.run',return_value='') as run:
+        with patch.object(self.c,'service_state',side_effect=[state(),state(),state(latest=OLD,created=NEW,image=IMAGE),state(active=NEW,latest=NEW,image=IMAGE)]),patch.object(self.c,'health',side_effect=[200,ControlError('fake')]),patch.object(self.c,'g',return_value=cloud_result()),patch('ops.cloud_control.run',return_value='') as run:
             with self.assertRaises(ControlError):self.c.deploy(SHA,OLD,'123-1')
         self.assertIn('--to-revisions='+OLD+'=100',run.call_args_list[-1].args[0])
+    def test_unready_staged_revision_never_receives_traffic(self):
+        cloud=cloud_result();cloud['status']['conditions'][0]['status']='False'
+        with patch.object(self.c,'service_state',side_effect=[state(),state(),state(created=NEW,image=IMAGE)]),patch.object(self.c,'health',return_value=200),patch.object(self.c,'g',return_value=cloud),patch('ops.cloud_control.run',return_value='') as run:
+            with self.assertRaises(ControlError):self.c.deploy(SHA,OLD,'123-1')
+        self.assertFalse(any('update-traffic' in x.args[0] for x in run.call_args_list))
     def test_workflow_is_pinned_and_has_no_credentials(self):
         text=(Path(__file__).parent/'.github/workflows/cloud-control.yml').read_text(encoding='utf-8')
         self.assertNotIn('secrets.',text)
