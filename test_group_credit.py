@@ -254,14 +254,14 @@ class IntegrationTests(unittest.TestCase):
         old_fn=json.loads((root/'legacy_function_hashes.json').read_text(encoding='utf-8'))
         new=ast.parse((root/'app.py').read_text(encoding='utf-8'))
         # Historical function AST hashes preserve the regression baseline.
-        new_fn={n.name:hashlib.sha256(ast.dump(n).encode()).hexdigest() for n in new.body if isinstance(n,ast.FunctionDef)}
+        new_fn={n.name:hashlib.sha256(ast.dump(n).replace(', type_params=[]','').encode()).hexdigest() for n in new.body if isinstance(n,ast.FunctionDef)}
         # Other changes are limited to reading the active-order view; original
         # cancelled transaction rows remain available for audit.
         for node in new.body:
             for child in ast.walk(node):
                 if isinstance(child,ast.Constant) and isinstance(child.value,str):
                     child.value=child.value.replace('FROM active_transactions','FROM transactions')
-        new_fn={n.name:hashlib.sha256(ast.dump(n).encode()).hexdigest() for n in new.body if isinstance(n,ast.FunctionDef)}
+        new_fn={n.name:hashlib.sha256(ast.dump(n).replace(', type_params=[]','').encode()).hexdigest() for n in new.body if isinstance(n,ast.FunctionDef)}
         self.assertEqual({name for name in old_fn if old_fn[name]!=new_fn[name]}, {'handle_message','append_sales_rows','stock_in_serials','reply','reply_messages'})
     def test_feature_defaults_off(self):
         code=(Path(__file__).parent/'app.py').read_text(encoding='utf-8')
