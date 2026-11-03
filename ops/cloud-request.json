@@ -1,6 +1,6 @@
 {
   "mode": "deploy",
-  "source_sha": "99e7a1b894a131232d66ab95e5fda52bf641c17f",
+  "source_sha": "0eff49c4ac6fa85ce8b21f26185a832f29456a72",
   "expected_revision": "line-bot-calc-menuproducts1103",
-  "request_id": "first-approved-cloud-deploy-diagnostic-20261103"
+  "request_id": "first-approved-cloud-deploy-zero-scale-fix-20261103"
 }
