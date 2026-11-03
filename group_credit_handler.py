@@ -57,7 +57,7 @@ def handle_group_credit(event, ns):
         if command=='/自助撤回':
             parts=text.split()
             if len(parts)!=2:
-                raise CreditError('格式：/自助撤回 訂單編號；會先顯示確認按鈕，不會立即退帳或回收。')
+                raise CreditError('格式：/自助撤回 訂單編號；會先顯示文字確認指令，不會立即退帳或回收。')
             result=service.request_cancel(group_id,operator,event_id,parts[1],admin)
             reply_cancel_prompt(event,result,ns)
             return True
@@ -87,18 +87,12 @@ def handle_group_credit(event, ns):
 
 
 def reply_cancel_prompt(event,result,ns):
-    # Import lazily: policy and fake-data tests do not need a LINE connection.
-    from linebot.v3.messaging import (ApiClient,MessagingApi,ReplyMessageRequest,
-                                     TemplateMessage,ButtonsTemplate,PostbackAction)
+    token=result['token']
     text=(f"撤回整筆訂單：{result['order_no']}\n{result['quantity']}張／退帳{result['amount']:,.2f}元\n"
-          '請管理員確認所有卡片未使用。機器人無法驗證兌換狀態。確認後恢復可售；5分鐘內有效。')
-    message=TemplateMessage(alt_text='撤回訂單確認：'+result['order_no'],
-        template=ButtonsTemplate(text=text[:160],actions=[
-            PostbackAction(label='確認未使用並回收',data='gc_cancel_confirm:'+result['token']),
-            PostbackAction(label='取消撤回',data='gc_cancel_decline:'+result['token'])]))
-    with ApiClient(ns['configuration']) as client:
-        from bottom_quick import decorate_reply
-        MessagingApi(client).reply_message(ReplyMessageRequest(reply_token=event.reply_token,messages=decorate_reply(event,[message],ns)))
+          '請管理員確認所有卡片未使用。機器人無法驗證兌換狀態。5分鐘內有效。\n'
+          f'確認後恢復可售並退欠款，請複製整行：\n/確認未使用並回收 {token}\n'
+          f'取消請輸入：\n/取消撤回 {token}')
+    ns['reply'](event,text)
 
 
 def handle_group_credit_postback(event,ns):

@@ -26,7 +26,7 @@ Google Cloud網頁無法在GPT雲端瀏覽器開啟時，可改由GitHub Actions
 ## 測試
 
 Python 3.11 或 3.12：`python -X utf8 run_offline_tests.py`。
-這組 83 項測試不需正式憑證，不會連正式資料庫、Google Sheets 或 LINE。
+這組 93 項測試不需正式憑證，不會連正式資料庫、Google Sheets 或 LINE。
 官方 LINE SDK 序列化另以 `python -X utf8 -m unittest -q test_line_buttons.py` 驗證，所有發送介面皆 mock。
 
 PostgreSQL 整合測試須在隔離 Linux 測試環境執行 `python run_isolated_tests.py`。
@@ -38,10 +38,9 @@ requirements.txt 保留正式版本原內容；尚未建立相依套件版本鎖
 
 ## 維護
 
-主程式 app.py；群組權限、欠款及撤回：group_credit*.py；管理／客人選單：bot_ui.py、bottom_quick.py。
+主程式 app.py；群組權限、欠款及撤回：group_credit*.py；正式文字分流：text_commands.py。bottom_quick.py 已停用快捷，bot_ui.py 的舊選單流程僅保留作回溯參考。
 daily_report.py 是獨立每日報表工作的程式，不代表每次機器人更新都應更新報表工作。
-操作說明見 UI_GUIDE.md。入庫須選品項、貼資料、核對、確認後才寫入。
-管理群按「選單」直接顯示十個入庫商品快捷。客人選單仍依原核准群組及定價權限提供商品。
+操作說明見 UI_GUIDE.md。管理群沿用既有文字出入庫指令與 authorized_users 權限；所有按鈕已停用。客人文字拿卡仍依原核准群組及定價、額度限制；自助撤回改為文字確認碼，保留原本期限、身分綁定與防重複檢查。
 
 機密透過環境變數、Secret Manager 與既有金鑰掛載提供；不要提交 .env、JSON 金鑰、Token、資料庫連線密碼、卡密、正式資料匯出或 *.private.*。
 .dockerignore 使用檔案白名單，不把測試、文件、私密設定複製到映像。
@@ -53,5 +52,5 @@ daily_report.py 是獨立每日報表工作的程式，不代表每次機器人�
 - 新增維護文件與測試入口，擴充 Git／Docker 排除規則。
 - migration*.sql 僅保存已存在功能的結構參考，不是完整正式資料庫備份，也不可在正式環境自動執行。
 
-雲端發佈、查核與部署流程已啟用，見 DEPLOYMENT_SETUP.md、.github/workflows/cloud-control.yml、ops/。另有17項無憑證管道測試：`python -X utf8 -m unittest -q test_cloud_control.py`；連同83單元、6官方SDK mock、48隔離PostgreSQL，共154項。
+雲端發佈、查核與部署流程已啟用，見 DEPLOYMENT_SETUP.md、.github/workflows/cloud-control.yml、ops/。另有17項無憑證管道測試：`python -X utf8 -m unittest -q test_cloud_control.py`；連同93單元、6官方SDK mock、48隔離PostgreSQL，共164項。
 不自動修改資料庫結構，不發LINE測試訊息；保留原群組、Secret Manager與Webhooks設定。

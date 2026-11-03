@@ -1,5 +1,5 @@
 from bottom_quick import decorate_reply
-from bot_ui import handle_ui_text, handle_ui_postback
+from text_commands import handle_ui_text, handle_ui_postback
 from group_credit_handler import handle_group_credit, handle_group_credit_postback
 from sale_detail_helpers import sheet_sale_time, write_appended_sale_serials
 from sales_sheet_retry import append_sales_with_retry
