@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+*.private.*
+*credential*.json
+*key*.json
+*.pem
+*.p12
+*.log
+postgres-test-result.json
+production-*.json
+.venv/
+gha-creds-*.json
