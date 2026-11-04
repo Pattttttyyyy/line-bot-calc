@@ -353,64 +353,68 @@ class GroupCredit:
         try:
             with conn.cursor(cursor_factory=self.dict_cursor) as cur:
                 account=self._account(cur,group_id)
-                cur.execute('''SELECT *,expires_at>clock_timestamp() AS valid FROM group_credit_cancel_requests
-                    WHERE token=%s AND group_id=%s FOR UPDATE''',(token,group_id))
-                request=cur.fetchone()
-                if not request:
-                    raise CreditError('這個撤回按鈕不屬於此群組，或已失效。')
-                parent=request['order_no']
-                cur.execute('SELECT order_no FROM group_credit_cancelled_orders WHERE group_id=%s AND parent_order_no=%s',(group_id,parent))
-                cancelled=cur.fetchall()
-                if cancelled:
-                    conn.rollback()
-                    return dict(duplicate=True,order_no=parent,debt=money(account['debt']))
-                if request['state']!='pending' or not request['valid']:
-                    raise CreditError('撤回申請已取消或超過5分鐘；請重新傳送指令。')
-                if decline:
-                    cur.execute("UPDATE group_credit_cancel_requests SET state='declined' WHERE token=%s",(token,))
-                    conn.commit()
-                    return dict(declined=True,order_no=parent)
-                sale=self._cancel_sale(cur,group_id,parent)
-                orders=sale['child_orders']
-                if isinstance(orders,str):orders=json.loads(orders)
-                cur.execute('''SELECT t.*,p.code FROM transactions t JOIN products p ON p.id=t.product_id
-                    WHERE t.order_no=ANY(%s) AND t.group_id=%s ORDER BY t.product_id,t.id FOR UPDATE OF t''',(orders,group_id))
-                transactions=cur.fetchall()
-                if len(transactions)!=len(orders) or {t['order_no'] for t in transactions}!=set(orders):
-                    raise CreditError('訂單紀錄不完整；尚未回收或退帳，請人工核對。')
-                amount=money(sale['amount'],positive=True)
-                # Paid/prepaid unused cards refund into the same signed balance;
-                # the existing original-order/card locks prevent double refunds.
-                debt=money(money(account['debt'])-amount)
-                items=[]
-                for t in transactions:
-                    cur.execute('''SELECT id,serial,status,product_id,sold_to FROM serials
-                        WHERE order_no=%s ORDER BY id FOR UPDATE''',(t['order_no'],))
-                    cards=cur.fetchall()
-                    if len(cards)!=t['quantity'] or any(c['status']!='sold' or c['product_id']!=t['product_id'] or c['sold_to']!=t['sold_to'] for c in cards):
-                        raise CreditError('原卡片狀態或數量不一致；整筆未撤回，需人工核對。')
-                    ids=[c['id'] for c in cards]
-                    cur.execute('''INSERT INTO group_credit_cancelled_orders
-                        (order_no,group_id,parent_order_no,request_token,confirmed_by,original_transaction,serial_ids)
-                        VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s)''',
-                        (t['order_no'],group_id,parent,token,operator,json.dumps(dict(t),default=str),ids))
-                    cur.execute('''UPDATE serials SET status='available',sold_to=NULL,order_no=NULL,sold_at=NULL,operator=NULL
-                        WHERE id=ANY(%s) AND status='sold' AND order_no=%s''',(ids,t['order_no']))
-                    if cur.rowcount!=len(ids):
-                        raise CreditError('卡片狀態已變更；整筆未撤回。')
-                    items.append(dict(product=dict(id=t['product_id'],code=t['code']),quantity=t['quantity'],
-                                      order_no=t['order_no'],serials=[c['serial'] for c in cards],serial_ids=ids))
-                cur.execute('UPDATE group_credit_accounts SET debt=%s,updated_at=now() WHERE group_id=%s',(debt,group_id))
-                cur.execute("UPDATE group_credit_cancel_requests SET state='confirmed' WHERE token=%s",(token,))
-                self._event(cur,group_id,'cancel:'+token,'cancel',-amount,debt,operator,
-                            reason='管理員確認未使用並回收 '+parent,child_orders=orders)
+                result=self._confirm_cancel(cur,account,group_id,operator,token,decline)
             conn.commit()
-            return dict(duplicate=False,order_no=parent,amount=amount,debt=debt,items=items,customer=account['customer'],
-                        quantity=sum(i['quantity'] for i in items))
+            return result
         except Exception:
             conn.rollback()
             raise
         finally:conn.close()
+
+    def _confirm_cancel(self, cur, account, group_id, operator, token, decline=False, direct=False):
+        """Caller validates root admin and holds the group account lock."""
+        cur.execute('''SELECT *,expires_at>clock_timestamp() AS valid FROM group_credit_cancel_requests
+            WHERE token=%s AND group_id=%s FOR UPDATE''',(token,group_id))
+        request=cur.fetchone()
+        if not request:
+            raise CreditError('這個撤回按鈕不屬於此群組，或已失效。')
+        parent=request['order_no']
+        cur.execute('SELECT order_no,request_token FROM group_credit_cancelled_orders WHERE group_id=%s AND parent_order_no=%s',(group_id,parent))
+        cancelled=cur.fetchall()
+        if cancelled:
+            return dict(duplicate=True,order_no=parent,debt=money(account['debt']),record_id='RC'+cancelled[0].get('request_token',token))
+        if request['state']!='pending' or not request['valid']:
+            raise CreditError('撤回申請已取消或超過5分鐘；請重新傳送指令。')
+        if decline:
+            cur.execute("UPDATE group_credit_cancel_requests SET state='declined' WHERE token=%s",(token,))
+            return dict(declined=True,order_no=parent)
+        sale=self._cancel_sale(cur,group_id,parent)
+        orders=sale['child_orders']
+        if isinstance(orders,str):orders=json.loads(orders)
+        cur.execute('''SELECT t.*,p.code FROM transactions t JOIN products p ON p.id=t.product_id
+            WHERE t.order_no=ANY(%s) AND t.group_id=%s ORDER BY t.product_id,t.id FOR UPDATE OF t''',(orders,group_id))
+        transactions=cur.fetchall()
+        if len(transactions)!=len(orders) or {t['order_no'] for t in transactions}!=set(orders):
+            raise CreditError('訂單紀錄不完整；尚未回收或退帳，請人工核對。')
+        amount=money(sale['amount'],positive=True)
+        # Paid/prepaid unused cards refund into the same signed balance;
+        # the existing original-order/card locks prevent double refunds.
+        debt=money(money(account['debt'])-amount)
+        items=[]
+        for t in transactions:
+            cur.execute('''SELECT id,serial,status,product_id,sold_to FROM serials
+                WHERE order_no=%s ORDER BY id FOR UPDATE''',(t['order_no'],))
+            cards=cur.fetchall()
+            if len(cards)!=t['quantity'] or any(c['status']!='sold' or c['product_id']!=t['product_id'] or c['sold_to']!=t['sold_to'] for c in cards):
+                raise CreditError('原卡片狀態或數量不一致；整筆未撤回，需人工核對。')
+            ids=[c['id'] for c in cards]
+            cur.execute('''INSERT INTO group_credit_cancelled_orders
+                (order_no,group_id,parent_order_no,request_token,confirmed_by,original_transaction,serial_ids)
+                VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s)''',
+                (t['order_no'],group_id,parent,token,operator,json.dumps(dict(t),default=str),ids))
+            cur.execute('''UPDATE serials SET status='available',sold_to=NULL,order_no=NULL,sold_at=NULL,operator=NULL
+                WHERE id=ANY(%s) AND status='sold' AND order_no=%s''',(ids,t['order_no']))
+            if cur.rowcount!=len(ids):
+                raise CreditError('卡片狀態已變更；整筆未撤回。')
+            items.append(dict(product=dict(id=t['product_id'],code=t['code']),quantity=t['quantity'],
+                              order_no=t['order_no'],serials=[c['serial'] for c in cards],serial_ids=ids))
+        cur.execute('UPDATE group_credit_accounts SET debt=%s,updated_at=now() WHERE group_id=%s',(debt,group_id))
+        cur.execute("UPDATE group_credit_cancel_requests SET state='confirmed' WHERE token=%s",(token,))
+        self._event(cur,group_id,'cancel:'+token,'cancel',-amount,debt,operator,
+                    reason=('管理員直接撤回發卡 ' if direct else '管理員確認未使用並回收 ')+parent,
+                    order_no='RC'+token,child_orders=orders)
+        return dict(duplicate=False,order_no=parent,amount=amount,debt=debt,items=items,customer=account['customer'],
+                    record_id='RC'+token,quantity=sum(i['quantity'] for i in items))
 
     def resend(self, group_id, operator, event_id, order_no, admin=False):
         group_context(group_id)

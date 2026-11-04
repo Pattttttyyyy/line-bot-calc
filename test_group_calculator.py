@@ -132,9 +132,9 @@ class LedgerAdapterTests(unittest.TestCase):
                 get_db=MagicMock(),RealDictCursor=object,find_product=MagicMock(),
                 create_order_no=MagicMock(),split_text_chunks=MagicMock(),reply=MagicMock())
         event=NS(message=NS(text='/撤回',id='undo-message'))
-        with patch('group_calculator.GroupCredit') as svc,patch('ledger_controls.request_reverse',return_value=dict(duplicate=True)) as reverse:
+        with patch('group_calculator.GroupCredit') as svc,patch('ledger_controls.undo_previous',return_value=dict(duplicate=True,record_id='AR_FAKE')) as reverse:
             self.assertTrue(handle_calculator(event,ns))
-            self.assertIsNone(reverse.call_args.args[4]);self.assertTrue(reverse.call_args.args[6])
+            self.assertIsNone(reverse.call_args.args[5]);self.assertTrue(reverse.call_args.args[4])
             svc.return_value.calculate.assert_not_called()
     def test_history_nonadmin_denied_before_database(self):
         from ledger_controls import history
@@ -144,21 +144,34 @@ class LedgerAdapterTests(unittest.TestCase):
 
 
 
-    def test_undo_aliases_choose_last_action_and_show_card_confirmation(self):
+    def test_undo_aliases_show_completed_card_refund_without_confirmation(self):
         for text in ('/撤回','/撤回上一動','/撤回 上一動'):
             self.assertTrue(looks_like_calculation(text))
             ns=dict(get_context_id=lambda e:GROUP,get_operator=lambda e:USER,is_admin=lambda u:True,
                     get_db=MagicMock(),RealDictCursor=object,find_product=MagicMock(),
                     create_order_no=MagicMock(),split_text_chunks=MagicMock(),reply=MagicMock())
             e=NS(message=NS(text=text,id='undo-message'))
-            result=dict(undo_kind='sale',order_no='TX_FAKE',token='a'*32,quantity=1,amount=D('905'))
-            with patch('group_calculator.GroupCredit') as cls,patch('ledger_controls.request_reverse',return_value=result) as reverse:
+            result=dict(undo_kind='sale',order_no='TX_FAKE',token='a'*32,quantity=1,amount=D('905'),debt=D('-905'),customer='測試',record_id='RC_FAKE',items=[])
+            with patch('group_calculator.GroupCredit') as cls,patch('ledger_controls.undo_previous',return_value=result) as reverse:
                 self.assertTrue(handle_calculator(e,ns))
-                self.assertIsNone(reverse.call_args.args[4])
+                self.assertIsNone(reverse.call_args.args[5])
                 cls.return_value.confirm_cancel.assert_not_called()
                 message=ns['reply'].call_args.args[1]
-                self.assertIn('發卡撤回申請（尚未執行）',message)
-                self.assertIn('/確認未使用並回收',message)
+                self.assertIn('已撤回發卡',message)
+                self.assertIn('RC_FAKE',message)
+                self.assertIn('預付款餘額：905.00元',message)
+                self.assertNotIn('/確認未使用並回收',message)
                 self.assertNotIn('/確認記帳',message)
+
+    def test_direct_ledger_undo_reply_has_reference_and_balances(self):
+        ns=dict(get_context_id=lambda e:GROUP,get_operator=lambda e:USER,is_admin=lambda u:True,
+                get_db=MagicMock(),RealDictCursor=object,find_product=MagicMock(),
+                create_order_no=MagicMock(),split_text_chunks=MagicMock(),reply=MagicMock())
+        r=dict(undo_kind='ledger',record_id='AR_FAKE',source_reference='AC_FAKE',amount=D('10000'),debt=D('4525'))
+        with patch('group_calculator.GroupCredit'),patch('ledger_controls.undo_previous',return_value=r):
+            handle_calculator(NS(message=NS(text='/撤回',id='m')),ns)
+        text=ns['reply'].call_args.args[1]
+        for value in ('已撤回記帳','AR_FAKE','AC_FAKE','4,525.00'):self.assertIn(value,text)
+        self.assertNotIn('/確認記帳',text)
 
 if __name__=='__main__':unittest.main()
