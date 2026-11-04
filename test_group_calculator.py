@@ -94,4 +94,32 @@ class CalculatorTests(unittest.TestCase):
             cls.return_value.calculate.assert_not_called();ns['reply'].assert_not_called()
 
 
+class LedgerAdapterTests(unittest.TestCase):
+    def test_pending_reply_has_text_confirmation_and_no_adjustment_claim(self):
+        from group_calculator import reply_ledger
+        ns=dict(reply=MagicMock())
+        reply_ledger(NS(),dict(needs_confirmation=True,token='CP'+'a'*32,
+                     request_kind='calculator_repeat_pending',expression='-905',amount='-905',note='第二筆'),ns)
+        text=ns['reply'].call_args.args[1]
+        self.assertIn('尚未記帳',text);self.assertIn('/確認記帳 CP',text);self.assertIn('/取消記帳 CP',text)
+    def test_declined_duplicate_does_not_claim_posted(self):
+        from group_calculator import reply_ledger
+        ns=dict(reply=MagicMock())
+        reply_ledger(NS(),dict(duplicate=True,kind='calculator_declined'),ns)
+        self.assertIn('未調整',ns['reply'].call_args.args[1])
+    def test_all_ledger_commands_route_to_calculator(self):
+        for command in ('/記帳紀錄','/更正記帳 AC_FAKE 原因','/撤銷記帳 AC_FAKE 原因','/確認記帳 CP_FAKE','/取消記帳 CP_FAKE'):
+            self.assertTrue(looks_like_calculation(command))
+    def test_new_money_reference_is_visible_in_receipt(self):
+        r=dict(customer='測試',expression='-905',amount=D('-905'),previous_debt=D('0'),debt=D('905'),
+               credit_limit=D('10000'),enabled=True,note='',record_id='AC_FAKE_ONLY')
+        self.assertIn('AC_FAKE_ONLY',json.dumps(calculator_bubble(r)))
+    def test_history_nonadmin_denied_before_database(self):
+        from ledger_controls import history
+        db=MemoryDB()
+        with self.assertRaises(CreditError):history(service(db),GROUP,USER)
+        self.assertEqual(db.connections,[])
+
+
+
 if __name__=='__main__':unittest.main()

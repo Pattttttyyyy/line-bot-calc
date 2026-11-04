@@ -26,7 +26,7 @@ Google Cloud網頁無法在GPT雲端瀏覽器開啟時，可改由GitHub Actions
 ## 測試
 
 Python 3.11 或 3.12：`python -X utf8 run_offline_tests.py`。
-這組 125 項測試不需正式憑證，不會連正式資料庫、Google Sheets 或 LINE。
+這組 130 項測試不需正式憑證，不會連正式資料庫、Google Sheets 或 LINE。
 官方 LINE SDK 序列化另以 `python -X utf8 -m unittest -q test_line_buttons.py` 驗證，所有發送介面皆 mock。
 
 PostgreSQL 整合測試須在隔離 Linux 測試環境執行 `python run_isolated_tests.py`。
@@ -57,7 +57,7 @@ daily_report.py 是獨立每日報表工作的程式，不代表每次機器人�
 - 新增維護文件與測試入口，擴充 Git／Docker 排除規則。
 - migration*.sql 僅保存已存在功能的結構參考，不是完整正式資料庫備份，也不可在正式環境自動執行。
 
-雲端發佈、查核與部署流程已啟用，見 DEPLOYMENT_SETUP.md、.github/workflows/cloud-control.yml、ops/。另有17項無憑證管道測試：`python -X utf8 -m unittest -q test_cloud_control.py`；連同125單元、12官方SDK mock、66隔離PostgreSQL，共220項。
+雲端發佈、查核與部署流程已啟用，見 DEPLOYMENT_SETUP.md、.github/workflows/cloud-control.yml、ops/。另有17項無憑證管道測試：`python -X utf8 -m unittest -q test_cloud_control.py`；連同130單元、12官方SDK mock、81隔離PostgreSQL，共240項。
 不自動修改資料庫結構，不發LINE測試訊息；保留原群組、Secret Manager與Webhooks設定。
 
 ## 客人測試群（2026-11-04）
@@ -77,3 +77,10 @@ daily_report.py 是獨立每日報表工作的程式，不代表每次機器人�
 - 與自動拿卡共用同一群組帳戶鎖、訊息去重與帳款稽核。手動記帳不發卡、不扣庫存、不寫銷售試算表；測試帳與軒帳仍分開。收款超過欠款整筆拒絕，仍不建立預付款。
 - 管理員可補記超過額度的舊欠款，後續自助拿卡仍被額度攔截。拿卡已自動增加欠款，勿另外輸入同筆負數重複加帳。
 - 發送逾時不重送、不反向調帳；同一訊息重送不會重複調帳，可再傳+0查帳。小卡本機建構錯誤才在發送前降回文字。
+
+## 記帳防護與更正（2026-11-04）
+計算機同一群、同一管理員在120秒內輸入相同欠款變動，先建立待確認紀錄，不調帳；回覆 `/確認記帳 CP...` 或 `/取消記帳 CP...`，5分鐘有效。重複記帳由原管理員確認，帳戶列鎖與固定確認事件識別碼保證並發、重送均只入帳一次。+0不新增事件。
+主管理員可 `/記帳紀錄` 查最近10筆（拿卡、手動帳、收款、撤回、更正），不顯示卡密或人員ID；手動記帳小卡附AC編號。
+`/更正記帳 記帳編號 原因`（或 `/撤銷記帳 ...`）先顯示文字確認，再增加一筆相反金額的沖回紀錄，原帳保留並標示已更正。支援原計算機與增加欠款/登記收款/減少欠款的手動帳；禁止更正拿卡銷售與再次更正沖回紀錄。確認時重驗目前欠款，防負欠款與重複沖回。更正可由同群另一位主管理員接手；發卡撤回的管理員接手權限保持既有行為。
+待確認事件不列入帳目清單；所有新流程只操作群組帳務，不操作庫存或銷售試算表。正式拿卡仍同步原銷售明細，測試群仍略過正式試算表。
+`lock_inventory_summary.sql` 為本次明確核准的匿名存取縮減，僅撤除 inventory_summary 的 PUBLIC/anon SELECT；不更動視圖內容、卡片、訂單、登入角色或服務帳號。由維護者透過已授權Supabase操作套用，Cloud Run發佈流程仍不自動執行SQL。
