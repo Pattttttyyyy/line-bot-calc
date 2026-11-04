@@ -710,13 +710,14 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(sql('SELECT count(*) FROM group_credit_cancel_requests',fetch=True)[0][0],0)
         self.assertEqual(sql('SELECT count(*) FROM group_credit_cancelled_orders',fetch=True)[0][0],0)
 
-    def test_direct_undo_root_only_and_no_walkback(self):
+    def test_direct_undo_root_only_and_repeat_until_empty(self):
         from ledger_controls import undo_previous
         self.buy('first');self.buy('second')
         with self.assertRaises(CreditError):undo_previous(self.service,GROUP,USER,'forbidden')
         undo_previous(self.service,GROUP,USER,'direct',True)
-        with self.assertRaises(CreditError):undo_previous(self.service,GROUP,USER,'another',True)
-        self.assertEqual(self.debt(),905)
+        undo_previous(self.service,GROUP,USER,'another',True)
+        self.assertEqual(self.debt(),0)
+        with self.assertRaises(CreditError):undo_previous(self.service,GROUP,USER,'empty',True)
 
     def test_direct_undo_cash_receipt_reverses_prepaid(self):
         from ledger_controls import undo_previous
@@ -770,5 +771,46 @@ class PostgreSQLTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):undo_previous(self.service,GROUP,USER,'direct',True)
         self.assertEqual(self.debt(),1000)
         self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator_reversal'",fetch=True)[0][0],0)
+
+    def test_repeat_undo_mixed_sale_payment_and_charge_in_order(self):
+        from ledger_controls import undo_previous
+        charge=self.service.calculate(GROUP,USER,'charge','-1000',True)
+        first=self.buy('first')
+        payment=self.service.calculate(GROUP,USER,'cash','+5000',True)
+        second=self.buy('second')
+        results=[undo_previous(self.service,GROUP,USER,'u'+str(i),True) for i in range(4)]
+        self.assertEqual([r.get('order_no') or r.get('source_reference') for r in results],
+                         [second['order_no'],payment['record_id'],first['order_no'],charge['record_id']])
+        self.assertEqual(self.debt(),0)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='available'",fetch=True)[0][0],4)
+        with self.assertRaises(CreditError):undo_previous(self.service,GROUP,USER,'empty',True)
+        self.assertTrue(undo_previous(self.service,GROUP,USER,'u0',True)['duplicate'])
+        self.assertEqual(self.debt(),0)
+
+    def test_repeat_undo_skips_previously_corrected_manual(self):
+        from ledger_controls import undo_previous,request_reverse,confirm
+        old=self.service.calculate(GROUP,USER,'old','-100',True)
+        newer=self.service.calculate(GROUP,USER,'new','-200',True)
+        prompt=request_reverse(self.service,GROUP,USER,'correction',newer['record_id'],'錯帳',True)
+        confirm(self.service,GROUP,USER,prompt['token'],True)
+        r=undo_previous(self.service,GROUP,USER,'undo',True)
+        self.assertEqual(r['source_reference'],old['record_id']);self.assertEqual(self.debt(),0)
+
+    def test_repeat_undo_concurrent_distinct_commands_each_undo_one(self):
+        from ledger_controls import undo_previous
+        self.buy('first');self.buy('second')
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(lambda i:undo_previous(self.service,GROUP,USER,'u'+str(i),True),range(2)))
+        self.assertEqual(len({r['order_no'] for r in results}),2)
+        self.assertEqual(self.debt(),0)
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='cancel'",fetch=True)[0][0],2)
+
+    def test_repeat_undo_more_than_two_manual_entries(self):
+        from ledger_controls import undo_previous
+        entries=[self.service.calculate(GROUP,USER,'e'+str(i),'-'+str(i+1),True) for i in range(12)]
+        results=[undo_previous(self.service,GROUP,USER,'u'+str(i),True) for i in range(12)]
+        self.assertEqual([r['source_reference'] for r in results],[r['record_id'] for r in reversed(entries)])
+        self.assertEqual(self.debt(),0)
+        with self.assertRaises(CreditError):undo_previous(self.service,GROUP,USER,'empty',True)
 
 if __name__=='__main__':unittest.main(verbosity=2)
