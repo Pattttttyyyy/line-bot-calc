@@ -53,10 +53,14 @@ def parse_calculation(raw):
             return value
 
         with localcontext() as ctx:
-            ctx.prec = 40
+            # Source is limited to 128 characters. Keep enough precision for
+            # all source digits and guard digits before the single cent rounding.
+            ctx.prec = 160
             amount = number(tree.body).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
         if abs(amount) > MAX_MONEY:
             raise ValueError('Out of range')
+        if amount == 0:
+            amount = Decimal('0.00')
         return expression, amount, note
     except (SyntaxError, ValueError, DecimalException, RecursionError):
         raise CreditError('算式無效：僅支援加減乘除、小括號及有效金額，不能除以0。') from None

@@ -21,6 +21,11 @@ class CalculatorTests(unittest.TestCase):
     def test_final_rounding(self):
         self.assertEqual(parse_calculation('+1/3')[1],D('.33'))
         self.assertEqual(parse_calculation('-0.005')[1],D('-.01'))
+        near_half = '0.004' + '9'*60
+        for raw in ('-'+near_half, '+('+near_half+'+0)', '+('+near_half+'*-1)'):
+            rounded = parse_calculation(raw)[1]
+            self.assertEqual(rounded,D('0.00'))
+            self.assertEqual(rounded.as_tuple().sign,0)
     def test_code_and_unsupported_operations_are_rejected(self):
         for raw in ('+__import__("os")','+1**2','+10//3','+True','+1e3','+0x10','+1;2','+1,000','+1/0','+nan','+1%2','+1\n+2','+1_000'):
             with self.subTest(raw=raw), self.assertRaises(CreditError):parse_calculation(raw)
