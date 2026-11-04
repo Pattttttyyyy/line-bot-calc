@@ -1,6 +1,6 @@
 {
   "mode": "deploy",
-  "source_sha": "b818e5f72e162ef0497466c7e391f6d79e00b9de",
-  "expected_revision": "line-bot-calc-gh-41835446729-1",
-  "request_id": "immediate-admin-undo-20261104"
+  "source_sha": "d9e6aa5d2bae06de237fd657c2939a9ec09974ed",
+  "expected_revision": "line-bot-calc-gh-41842749588-1",
+  "request_id": "consecutive-admin-undo-20261104"
 }
