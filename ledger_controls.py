@@ -157,6 +157,15 @@ def request_reverse(svc, group, user, event, reference, reason, admin=False):
                 conn.rollback()
                 return result
             if reference is None:
+                # Redelivery must keep the original card target even if a new
+                # sale or ledger movement arrived after this request.
+                cur.execute('SELECT order_no FROM group_credit_cancel_requests WHERE group_id=%s AND message_id=%s', (group,str(event)))
+                previous_card = cur.fetchone()
+                if previous_card:
+                    result = svc._request_cancel(cur,account,group,user,event,previous_card['order_no'])
+                    result['undo_kind'] = 'sale'
+                    conn.commit()
+                    return result
                 # Choose under the same account lock; pending/query events are
                 # not movements. Never silently skip a newer sale or correction.
                 cur.execute('''SELECT event_id,order_no,kind FROM group_credit_events
@@ -165,9 +174,14 @@ def request_reverse(svc, group, user, event, reference, reason, admin=False):
                     (group, list(MANUAL)+['sale','cancel','calculator_reversal']))
                 latest = cur.fetchone()
                 if not latest:
-                    raise CreditError('本群目前沒有可撤回的記帳。')
-                if latest['kind'] in ('sale','cancel'):
-                    raise CreditError('最近一筆是拿卡或發卡撤回，不會用記帳撤回處理。拿卡訂單請用 /自助撤回 訂單編號；指定手動帳可用 /更正記帳 記帳編號 原因。')
+                    raise CreditError('本群目前沒有可撤回的記帳或發卡動作。')
+                if latest['kind']=='sale':
+                    result = svc._request_cancel(cur,account,group,user,event,latest['order_no'])
+                    result['undo_kind'] = 'sale'
+                    conn.commit()
+                    return result
+                if latest['kind']=='cancel':
+                    raise CreditError('上一動已是發卡撤回，不會恢復已回收的訂單或自動撤回更早的動作。指定其他訂單請用 /自助撤回 TX訂單編號。')
                 if latest['kind']=='calculator_reversal':
                     raise CreditError('最近一筆已是記帳更正，不會再次沖回或往前撤回其他帳目。請用 /記帳紀錄 查明細。')
                 reference = latest['order_no'] or latest['event_id']

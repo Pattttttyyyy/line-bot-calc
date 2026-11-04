@@ -90,9 +90,9 @@ def handle_group_credit(event, ns):
 
 def reply_cancel_prompt(event,result,ns):
     token=result['token']
-    text=(f"撤回整筆訂單：{result['order_no']}\n{result['quantity']}張／退帳{result['amount']:,.2f}元\n"
+    text=(f"發卡撤回申請（尚未執行）\n訂單：{result['order_no']}\n{result['quantity']}張／退帳{result['amount']:,.2f}元\n"
           '請管理員確認所有卡片未使用。機器人無法驗證兌換狀態。5分鐘內有效。\n'
-          f'確認後恢復可售並退欠款，請複製整行：\n/確認未使用並回收 {token}\n'
+          f'確認後恢復可售並退款入帳（多餘轉預付款），請複製整行：\n/確認未使用並回收 {token}\n'
           f'取消請輸入：\n/取消撤回 {token}')
     ns['reply'](event,text)
 

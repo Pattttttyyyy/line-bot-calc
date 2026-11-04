@@ -304,38 +304,43 @@ class GroupCredit:
         try:
             with conn.cursor(cursor_factory=self.dict_cursor) as cur:
                 account=self._account(cur,group_id)
-                sale=self._cancel_sale(cur,group_id,order_no)
-                parent=sale['order_no']
-                cur.execute('SELECT 1 FROM group_credit_cancelled_orders WHERE group_id=%s AND parent_order_no=%s', (group_id,parent))
-                if cur.fetchone():
-                    raise CreditError('此訂單已撤回，不會再次退帳或回收。')
-                cur.execute('''SELECT token,state,expires_at>clock_timestamp() AS valid FROM group_credit_cancel_requests
-                    WHERE group_id=%s AND message_id=%s''', (group_id,str(message_id)))
-                previous=cur.fetchone()
-                if previous:
-                    if previous['state']!='pending' or not previous['valid']:
-                        raise CreditError('這則撤回申請已失效；如需處理，請重新傳送撤回指令。')
-                    token=previous['token']
-                else:
-                    token=secrets.token_hex(16)
-                    cur.execute('''INSERT INTO group_credit_cancel_requests
-                        (token,group_id,message_id,order_no,requested_by) VALUES (%s,%s,%s,%s,%s)''',
-                        (token,group_id,str(message_id),parent,operator))
-                orders=sale['child_orders']
-                if isinstance(orders,str):orders=json.loads(orders)
-                cur.execute('''SELECT p.code,t.quantity FROM transactions t JOIN products p ON p.id=t.product_id
-                    WHERE t.order_no=ANY(%s) AND t.group_id=%s ORDER BY t.id''',(orders,group_id))
-                rows=cur.fetchall()
-                if len(rows)!=len(orders):
-                    raise CreditError('原訂單明細不完整，需人工核對；尚未撤回。')
+                result=self._request_cancel(cur,account,group_id,operator,message_id,order_no)
             conn.commit()
-            return dict(token=token,order_no=parent,amount=money(sale['amount']),
-                        customer=account['customer'],quantity=sum(r['quantity'] for r in rows),
-                        items=[dict(r) for r in rows])
+            return result
         except Exception:
             conn.rollback()
             raise
         finally:conn.close()
+
+    def _request_cancel(self, cur, account, group_id, operator, message_id, order_no):
+        """Prepare only; caller holds the account lock and owns the transaction."""
+        sale=self._cancel_sale(cur,group_id,order_no)
+        parent=sale['order_no']
+        cur.execute('SELECT 1 FROM group_credit_cancelled_orders WHERE group_id=%s AND parent_order_no=%s', (group_id,parent))
+        if cur.fetchone():
+            raise CreditError('此訂單已撤回，不會再次退帳或回收。')
+        cur.execute('''SELECT token,state,expires_at>clock_timestamp() AS valid FROM group_credit_cancel_requests
+            WHERE group_id=%s AND message_id=%s''', (group_id,str(message_id)))
+        previous=cur.fetchone()
+        if previous:
+            if previous['state']!='pending' or not previous['valid']:
+                raise CreditError('這則撤回申請已失效；如需處理，請重新傳送撤回指令。')
+            token=previous['token']
+        else:
+            token=secrets.token_hex(16)
+            cur.execute('''INSERT INTO group_credit_cancel_requests
+                (token,group_id,message_id,order_no,requested_by) VALUES (%s,%s,%s,%s,%s)''',
+                (token,group_id,str(message_id),parent,operator))
+        orders=sale['child_orders']
+        if isinstance(orders,str):orders=json.loads(orders)
+        cur.execute('''SELECT p.code,t.quantity FROM transactions t JOIN products p ON p.id=t.product_id
+            WHERE t.order_no=ANY(%s) AND t.group_id=%s ORDER BY t.id''',(orders,group_id))
+        rows=cur.fetchall()
+        if len(rows)!=len(orders):
+            raise CreditError('原訂單明細不完整，需人工核對；尚未撤回。')
+        return dict(token=token,order_no=parent,amount=money(sale['amount']),
+                    customer=account['customer'],quantity=sum(r['quantity'] for r in rows),
+                    items=[dict(r) for r in rows])
 
     def confirm_cancel(self, group_id, operator, token, admin=False, decline=False):
         group_context(group_id)

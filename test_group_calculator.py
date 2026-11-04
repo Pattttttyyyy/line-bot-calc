@@ -144,4 +144,21 @@ class LedgerAdapterTests(unittest.TestCase):
 
 
 
+    def test_undo_aliases_choose_last_action_and_show_card_confirmation(self):
+        for text in ('/撤回','/撤回上一動','/撤回 上一動'):
+            self.assertTrue(looks_like_calculation(text))
+            ns=dict(get_context_id=lambda e:GROUP,get_operator=lambda e:USER,is_admin=lambda u:True,
+                    get_db=MagicMock(),RealDictCursor=object,find_product=MagicMock(),
+                    create_order_no=MagicMock(),split_text_chunks=MagicMock(),reply=MagicMock())
+            e=NS(message=NS(text=text,id='undo-message'))
+            result=dict(undo_kind='sale',order_no='TX_FAKE',token='a'*32,quantity=1,amount=D('905'))
+            with patch('group_calculator.GroupCredit') as cls,patch('ledger_controls.request_reverse',return_value=result) as reverse:
+                self.assertTrue(handle_calculator(e,ns))
+                self.assertIsNone(reverse.call_args.args[4])
+                cls.return_value.confirm_cancel.assert_not_called()
+                message=ns['reply'].call_args.args[1]
+                self.assertIn('發卡撤回申請（尚未執行）',message)
+                self.assertIn('/確認未使用並回收',message)
+                self.assertNotIn('/確認記帳',message)
+
 if __name__=='__main__':unittest.main()
