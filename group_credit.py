@@ -34,6 +34,16 @@ def money(value, *, positive=False):
         raise CreditError('金額格式不正確。') from exc
 
 
+def balance_values(value):
+    balance = money(value)
+    return max(Decimal('0.00'), balance), max(Decimal('0.00'), -balance)
+
+
+def balance_text(value):
+    debt, prepaid = balance_values(value)
+    return f'目前欠款：{debt:,.2f}元\n預付款餘額：{prepaid:,.2f}元'
+
+
 def customer_products(customer):
     if customer == TEST_CUSTOMER:
         return {TEST_CODE: TEST_FACE}
@@ -62,7 +72,7 @@ def checked_debt(debt, limit, amount, enabled):
         raise CreditError('請管理員先設定欠款上限。')
     limit = money(limit, positive=True)
     if debt >= limit or debt + amount > limit:
-        raise CreditError(f'⛔ 額度不足：目前欠款{debt:,.2f}元，上限{limit:,.2f}元；本筆{amount:,.2f}元。請管理員處理後再拿卡。')
+        raise CreditError(f'⛔ 額度不足：{balance_text(debt)}；欠款上限{limit:,.2f}元；本筆{amount:,.2f}元。請管理員處理後再拿卡。')
     return money(debt + amount)
 
 
@@ -171,8 +181,6 @@ class GroupCredit:
                     amount = money(value, positive=True)
                     delta = amount if command == 'charge' else -amount
                     debt = money(debt + delta)
-                    if debt < 0:
-                        raise CreditError('減少金額超過目前欠款；本版本不建立負欠款或預付款。')
                     cur.execute('UPDATE group_credit_accounts SET debt=%s,updated_at=now() WHERE group_id=%s', (debt,group_id))
                 elif command in ('enable','disable'):
                     if command == 'enable' and account['credit_limit'] is None:
@@ -366,9 +374,9 @@ class GroupCredit:
                 if len(transactions)!=len(orders) or {t['order_no'] for t in transactions}!=set(orders):
                     raise CreditError('訂單紀錄不完整；尚未回收或退帳，請人工核對。')
                 amount=money(sale['amount'],positive=True)
-                debt=money(account['debt'])-amount
-                if debt<0:
-                    raise CreditError('目前欠款小於原訂單金額，可能已收款或先行減帳；請先人工對帳，避免重複退帳。本次未撤回。')
+                # Paid/prepaid unused cards refund into the same signed balance;
+                # the existing original-order/card locks prevent double refunds.
+                debt=money(money(account['debt'])-amount)
                 items=[]
                 for t in transactions:
                     cur.execute('''SELECT id,serial,status,product_id,sold_to FROM serials

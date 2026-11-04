@@ -2,10 +2,10 @@
 import ast
 import re
 from decimal import Decimal, DecimalException, ROUND_HALF_UP, localcontext
-from group_credit import CreditError, GroupCredit, MAX_MONEY
+from group_credit import CreditError, GroupCredit, MAX_MONEY, balance_values
 
 TRANSLATION = str.maketrans('＋－−×÷（）０１２３４５６７８９', '+--*/()0123456789')
-LEDGER_COMMANDS = ('/記帳紀錄', '/更正記帳', '/撤銷記帳', '/確認記帳', '/取消記帳')
+LEDGER_COMMANDS = ('/記帳紀錄', '/更正記帳', '/撤銷記帳', '/撤回', '/確認記帳', '/取消記帳')
 
 
 def looks_like_calculation(text):
@@ -18,7 +18,7 @@ def looks_like_calculation(text):
 def reply_ledger(event, result, ns):
     if result.get('needs_confirmation'):
         amount = Decimal(result['amount'])
-        change = ('增加欠款 ' if amount < 0 else '減少欠款 ') + f'{abs(amount):,.2f}元'
+        change = ('扣預付款／增加欠款 ' if amount < 0 else '結欠款／增加預付款 ') + f'{abs(amount):,.2f}元'
         title = ('⚠️ 120秒內出現相同金額，本次尚未記帳。' if result['request_kind']=='calculator_repeat_pending'
                  else '更正申請：沖回原帳，保留原紀錄。本次尚未更正。')
         detail = ('算式：'+result['expression'] if result.get('expression') else '原記帳：'+result['reference'])
@@ -113,10 +113,15 @@ def handle_calculator(event, ns):
             for row in rows:
                 reference = row['order_no'] or row['event_id']
                 when = row['created_at'].astimezone(ZoneInfo('Asia/Taipei')).strftime('%m/%d %H:%M')
-                lines.append(f"\n{when} {labels[row['kind']]}{'（已更正）' if row['corrected'] else ''}\n編號：{reference}\n欠款變動：{row['amount']:+,.2f}元；餘額：{row['debt_after']:,.2f}元\n{row['reason'][:120]}")
+                owed, prepaid = balance_values(row['debt_after'])
+                lines.append(f"\n{when} {labels[row['kind']]}{'（已更正）' if row['corrected'] else ''}\n編號：{reference}\n帳款變動：{row['amount']:+,.2f}元\n欠款：{owed:,.2f}元；預付款：{prepaid:,.2f}元\n{row['reason'][:120]}")
             ns['reply'](event, '\n'.join(lines) if rows else '本群目前沒有記帳或拿卡紀錄。')
             return True
-        if command in ('/更正記帳','/撤銷記帳'):
+        if command == '/撤回':
+            reference = parts[1] if len(parts)>1 else None
+            reason = parts[2] if len(parts)>2 else '管理員撤回手動記帳'
+            result = request_reverse(service,group,operator,str(getattr(event.message,'id','') or ''),reference,reason,admin)
+        elif command in ('/更正記帳','/撤銷記帳'):
             if len(parts)!=3: raise CreditError('格式：/更正記帳 記帳編號 原因；會先顯示文字確認。')
             result = request_reverse(service,group,operator,str(getattr(event.message,'id','') or ''),parts[1],parts[2],admin)
         elif command in ('/確認記帳','/取消記帳'):

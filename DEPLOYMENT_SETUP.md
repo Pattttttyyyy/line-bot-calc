@@ -61,3 +61,10 @@ roles/run.developer具有指定服務的管理能力，故必須以production核
 - https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
 - https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments
 - https://github.com/google-github-actions/auth
+
+## 預付款版本上線順序（尚未執行）
+1. 執行離線、SDK及隔離 PostgreSQL 測試；隔離庫需驗證 `enable_group_prepay.sql` 升級及原餘額保留。不可用正式帳款或發卡驗證。
+2. 確認正式修訂仍為預期版本。先部署相容正負淨額的新程式並完成唯讀健康驗證；此時舊約束仍會拒絕超額收款。
+3. 新版健康後，使用受控 migration 套用 `enable_group_prepay.sql`。只調整 `group_credit_accounts_debt_check`，不更動既有帳款、庫存、訂單、額度或成員。唯讀驗證約束與版本；不代使用者補登款項。
+4. 一旦帳戶有負淨額，不可回滾至只接受非負欠款的舊程式或還原舊約束；需使用相容預付款的版本修復。若第3步未成功，保留新版並修復約束升級；不可宣稱預付款已開通。
+目前 GitHub 連接寫入403、網頁提交受安全政策阻擋；程式及約束均尚未在正式環境變更。

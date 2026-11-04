@@ -47,8 +47,6 @@ def write(svc, cur, account, user, event, amount, reason, kind='calculator', sou
     # Amount is the debt delta. Keep the original entry and append compensation.
     before = money(account['debt'])
     debt = money(before + amount)
-    if debt < 0:
-        raise CreditError('減少金額超過目前欠款；整筆未記帳或更正，請先人工對帳。')
     reference = ('AR' if kind == 'calculator_reversal' else 'AC') + secrets.token_hex(8)
     cur.execute('UPDATE group_credit_accounts SET debt=%s,updated_at=now() WHERE group_id=%s', (debt, account['group_id']))
     svc._event(cur, account['group_id'], event, kind, amount, debt, user,
@@ -158,10 +156,24 @@ def request_reverse(svc, group, user, event, reference, reason, admin=False):
                 result = resume(cur, group, event) if previous['kind'] in PENDING else previous
                 conn.rollback()
                 return result
+            if reference is None:
+                # Choose under the same account lock; pending/query events are
+                # not movements. Never silently skip a newer sale or correction.
+                cur.execute('''SELECT event_id,order_no,kind FROM group_credit_events
+                    WHERE group_id=%s AND kind=ANY(%s)
+                    ORDER BY created_at DESC,event_id DESC LIMIT 1''',
+                    (group, list(MANUAL)+['sale','cancel','calculator_reversal']))
+                latest = cur.fetchone()
+                if not latest:
+                    raise CreditError('本群目前沒有可撤回的記帳。')
+                if latest['kind'] in ('sale','cancel'):
+                    raise CreditError('最近一筆是拿卡或發卡撤回，不會用記帳撤回處理。拿卡訂單請用 /自助撤回 訂單編號；指定手動帳可用 /更正記帳 記帳編號 原因。')
+                if latest['kind']=='calculator_reversal':
+                    raise CreditError('最近一筆已是記帳更正，不會再次沖回或往前撤回其他帳目。請用 /記帳紀錄 查明細。')
+                reference = latest['order_no'] or latest['event_id']
             row = original(cur, group, reference)
-            # Refuse an impossible refund before creating a prompt as well.
-            if money(account['debt']) - money(row['amount']) < 0:
-                raise CreditError('目前欠款不足以沖回此筆，請先人工對帳。')
+            # A refund may create prepayment, but must remain a valid amount.
+            money(money(account['debt']) - money(row['amount']))
             result = pending(svc, cur, account, user, event, PENDING[1],
                              dict(source=row['event_id'], reference=reference, note=reason,
                                   amount=str(money(row['amount']))))

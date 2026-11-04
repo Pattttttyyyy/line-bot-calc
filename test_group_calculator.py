@@ -60,10 +60,16 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(db.inventory_reads,0);self.assertEqual(db.state['transactions'],[])
         self.assertEqual(db.state['events'][(GROUP,'charge')]['amount'],D('905'))
         self.assertEqual(db.state['events'][(GROUP,'payment')]['amount'],D('-500'))
-    def test_overpayment_rolls_back(self):
-        db=MemoryDB(debt='905');before=copy.deepcopy(db.state)
-        with self.assertRaises(CreditError):service(db).calculate(GROUP,USER,'over','+906',True)
-        self.assertEqual(db.state,before)
+    def test_screenshot_overpayment_keeps_prepaid_and_deduplicates(self):
+        db=MemoryDB(debt='14525');s=service(db)
+        r=s.calculate(GROUP,USER,'over','+20000',True)
+        self.assertEqual(r['debt'],D('-5475'))
+        data=json.dumps(calculator_bubble(r),ensure_ascii=False)
+        self.assertIn('預付款餘額',data);self.assertIn('5,475.00',data)
+        self.assertNotIn('-5,475.00',data)
+        self.assertTrue(s.calculate(GROUP,USER,'over','+20000',True)['duplicate'])
+        self.assertEqual(db.state['account']['debt'],D('-5475'))
+        self.assertEqual(db.inventory_reads,0)
     def test_audit_failure_rolls_back_debt(self):
         db=MemoryDB();db.fail_event=True;before=copy.deepcopy(db.state)
         with self.assertRaises(RuntimeError):service(db).calculate(GROUP,USER,'charge','-905',True)
@@ -114,6 +120,22 @@ class LedgerAdapterTests(unittest.TestCase):
         r=dict(customer='測試',expression='-905',amount=D('-905'),previous_debt=D('0'),debt=D('905'),
                credit_limit=D('10000'),enabled=True,note='',record_id='AC_FAKE_ONLY')
         self.assertIn('AC_FAKE_ONLY',json.dumps(calculator_bubble(r)))
+    def test_undo_shortcut_routes_without_changing_legacy_fallback(self):
+        from text_commands import handle_ui_text
+        self.assertTrue(looks_like_calculation('/撤回'))
+        event=NS(message=NS(text='/撤回'))
+        with patch('text_commands.handle_calculator',return_value=False) as route:
+            self.assertFalse(handle_ui_text(event,{}))
+            route.assert_called_once_with(event,{})
+    def test_undo_shortcut_requests_latest_manual_not_arbitrary_math(self):
+        ns=dict(get_context_id=lambda e:GROUP,get_operator=lambda e:USER,is_admin=lambda u:True,
+                get_db=MagicMock(),RealDictCursor=object,find_product=MagicMock(),
+                create_order_no=MagicMock(),split_text_chunks=MagicMock(),reply=MagicMock())
+        event=NS(message=NS(text='/撤回',id='undo-message'))
+        with patch('group_calculator.GroupCredit') as svc,patch('ledger_controls.request_reverse',return_value=dict(duplicate=True)) as reverse:
+            self.assertTrue(handle_calculator(event,ns))
+            self.assertIsNone(reverse.call_args.args[4]);self.assertTrue(reverse.call_args.args[6])
+            svc.return_value.calculate.assert_not_called()
     def test_history_nonadmin_denied_before_database(self):
         from ledger_controls import history
         db=MemoryDB()
