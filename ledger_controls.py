@@ -263,15 +263,18 @@ def undo_previous(svc, group, user, message, admin=False, reference=None):
                 result['undo_kind']='sale'
             else:
                 if reference is None:
-                    cur.execute("""SELECT event_id,order_no,kind FROM group_credit_events
-                        WHERE group_id=%s AND kind=ANY(%s)
-                        ORDER BY created_at DESC,event_id DESC LIMIT 1""",
-                        (group,list(MANUAL)+['sale','cancel','calculator_reversal']))
+                    cur.execute("""SELECT e.event_id,e.order_no,e.kind FROM group_credit_events e
+                        WHERE e.group_id=%s AND e.kind=ANY(%s)
+                          AND NOT EXISTS (SELECT 1 FROM group_credit_events r
+                            WHERE r.group_id=e.group_id AND r.kind='calculator_reversal'
+                              AND r.child_orders @> jsonb_build_array(e.event_id))
+                          AND NOT EXISTS (SELECT 1 FROM group_credit_cancelled_orders c
+                            WHERE c.group_id=e.group_id AND c.parent_order_no=e.order_no)
+                        ORDER BY e.created_at DESC,e.event_id DESC LIMIT 1""",
+                        (group,list(MANUAL)+['sale']))
                     latest=cur.fetchone()
                     if not latest:
-                        raise CreditError('本群沒有可撤回的記帳或發卡。')
-                    if latest['kind'] in ('cancel','calculator_reversal'):
-                        raise CreditError('上一動已撤回，不會重複退款或自動往前撤其他筆。請用 /記帳紀錄 核對。')
+                        raise CreditError('本群已沒有尚未撤回的發卡或記帳。')
                     reference=latest['order_no'] or latest['event_id']
                     if latest['kind']=='sale':
                         pending_card=svc._request_cancel(cur,account,group,user,event,reference)
