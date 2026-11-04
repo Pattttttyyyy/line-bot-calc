@@ -128,5 +128,5 @@ class MentionSDKTests(unittest.TestCase):
     def test_real_sdk_mention_parsing(self):
         from linebot.v3.webhooks import TextMessageContent
         from group_credit_handler import mentioned_buyer
-        msg=TextMessageContent.from_dict(dict(type='text',id='FAKE',text='/自助核准 @測試客人',mention=dict(mentionees=[dict(type='user',index=6,length=5,userId='U'+'e'*32,isSelf=False)])))
+        msg=TextMessageContent.from_dict(dict(type='text',id='FAKE',quoteToken='FAKE_QUOTE',text='/自助核准 @測試客人',mention=dict(mentionees=[dict(type='user',index=6,length=5,userId='U'+'e'*32,isSelf=False)])))
         self.assertEqual(mentioned_buyer(msg,'/自助核准'),'U'+'e'*32)
