@@ -74,3 +74,57 @@ def reply_receipt(event, result, summary, ns, sheet_ok=True, stock_ok=True):
         return ns['reply_messages'](event, result['serial_chunks'] + [summary])
     with ApiClient(ns['configuration']) as client:
         MessagingApi(client).reply_message(request)
+
+
+def calculator_bubble(result):
+    amount = Decimal(str(result['amount']))
+    prefix = '測試｜' if result['customer'] == '測試' else ''
+    title = prefix + ('帳況查詢' if amount == 0 else '計算結果｜已記帳')
+    signed = ('+' if amount >= 0 else '-') + money_text(abs(amount))
+
+    def text(value, **options):
+        return dict(type='text', text=str(value), wrap=True, **options)
+
+    def row(label, value, strong=False):
+        return dict(type='box', layout='horizontal', spacing='sm', contents=[
+            text(label, size='sm', color='#777777', flex=4),
+            text(value, size='sm', color='#A5754A', align='end', flex=6,
+                 weight='bold' if strong else 'regular')])
+
+    limit = result['credit_limit']
+    remaining = ('尚未設定' if limit is None else 'NT$ ' + money_text(
+        max(Decimal('0'), Decimal(str(limit)) - Decimal(str(result['debt'])))))
+    contents = [text(title, size='lg', weight='bold', color='#23A455'),
+                text('客戶：' + result['customer'], size='sm', color='#777777'),
+                text(result['expression'] + ' = ' + signed, size='sm', align='end', color='#A5754A'),
+                dict(type='separator', margin='md', color='#EEEEEE'),
+                row('上次欠款', 'NT$ ' + money_text(result['previous_debt'])),
+                row('本次金額', signed + ' 元'),
+                row('目前欠款', 'NT$ ' + money_text(result['debt']), True),
+                row('剩餘額度', remaining),
+                dict(type='separator', margin='md', color='#EEEEEE'),
+                text('備註：' + (result['note'] or ('僅查詢，帳款未變更' if amount == 0 else '管理員手動記帳')),
+                     size='xs', color='#777777'),
+                text('正數收款減少欠款；負數增加欠款。\n拿卡已自動記帳，請勿再輸入同筆金額。', size='xxs', color='#999999')]
+    if not result['enabled']:
+        contents.append(text('自助拿卡目前關閉。', size='xs', color='#D95040'))
+    return dict(type='bubble', size='kilo', body=dict(type='box', layout='vertical',
+                paddingAll='16px', spacing='sm', contents=contents))
+
+
+def reply_calculator(event, result, ns):
+    summary = (f"{'【測試】' if result['customer']=='測試' else ''}計算機\n"
+               f"{result['expression']} = {money_text(result['amount'])}\n"
+               f"上次欠款：{money_text(result['previous_debt'])}元\n"
+               f"目前欠款：{money_text(result['debt'])}元\n"
+               + ('僅查詢，帳款未變更。' if result['amount']==0 else '已記帳，請勿重複輸入。'))
+    try:
+        from linebot.v3.messaging import (ApiClient, MessagingApi, ReplyMessageRequest,
+                                         FlexMessage, FlexContainer)
+        message = FlexMessage(alt_text=summary[:400], contents=FlexContainer.from_dict(calculator_bubble(result)))
+        request = ReplyMessageRequest(reply_token=event.reply_token, messages=[message])
+    except Exception:
+        return ns['reply'](event, summary)
+    # A timeout may follow a committed adjustment. Never retry or reverse it.
+    with ApiClient(ns['configuration']) as client:
+        MessagingApi(client).reply_message(request)
