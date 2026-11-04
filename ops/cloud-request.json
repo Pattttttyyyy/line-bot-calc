@@ -1,6 +1,6 @@
 {
   "mode": "deploy",
-  "source_sha": "89611a95332ce6de08768303c56696efb0e5e821",
-  "expected_revision": "line-bot-calc-gh-41845209181-1",
-  "request_id": "test-sales-mirror-20261104"
+  "source_sha": "e8ada477da932f8107a5262bfe4c7a6772fd96cf",
+  "expected_revision": "line-bot-calc-gh-41849382042-1",
+  "request_id": "mention-buyer-approval-20261104"
 }
