@@ -304,7 +304,7 @@ class IntegrationTests(unittest.TestCase):
                 if isinstance(child,ast.Constant) and isinstance(child.value,str):
                     child.value=child.value.replace('FROM active_transactions','FROM transactions')
         new_fn={n.name:hashlib.sha256(ast.dump(n).replace(', type_params=[]','').encode()).hexdigest() for n in new.body if isinstance(n,ast.FunctionDef)}
-        self.assertEqual({name for name in old_fn if old_fn[name]!=new_fn[name]}, {'handle_message','append_sales_rows','stock_in_serials','reply','reply_messages'})
+        self.assertEqual({name for name in old_fn if old_fn[name]!=new_fn[name]}, {'handle_message','append_sales_rows','stock_in_serials','reply','reply_messages','get_sales_sheet'})
     def test_feature_defaults_off(self):
         code=(Path(__file__).parent/'app.py').read_text(encoding='utf-8')
         self.assertIn('os.getenv("GROUP_SELF_SERVICE_ENABLED", "0") == "1"',code)

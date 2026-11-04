@@ -122,7 +122,12 @@ def reply_cancel_result(event,result,ns):
         ns['reply'](event,'已取消撤回申請；訂單、欠款與庫存均未變更。')
         return True
     sales_ok,stock_ok=True,True
-    if result.get('customer') != TEST_CUSTOMER:
+    if result.get('customer') == TEST_CUSTOMER:
+        try:
+            sales_ok=ns['mark_sales_rows_undone_in_sheet']([i['order_no'] for i in result['items']],ns['get_sales_sheet'](TEST_CUSTOMER))
+        except Exception:
+            sales_ok=False
+    else:
         try:
             sales_ok=ns['mark_sales_rows_undone']([i['order_no'] for i in result['items']])
         except Exception:
@@ -144,11 +149,11 @@ def reply_cancel_result(event,result,ns):
 def deliver_sale(event,ns,service,group_id,event_id,result):
     testing = result['customer'] == TEST_CUSTOMER
     sheet_ok,stock_ok=True,True
+    try:
+        sheet_ok=ns['append_sales_rows'](result['customer'],result['items'])
+    except Exception:
+        sheet_ok=False
     if not testing:
-        try:
-            sheet_ok=ns['append_sales_rows'](result['customer'],result['items'])
-        except Exception:
-            sheet_ok=False
         try:
             stock_ok=ns['mark_product_sale'](result['items'],result['customer'])
         except Exception:
@@ -156,7 +161,7 @@ def deliver_sale(event,ns,service,group_id,event_id,result):
     summary=(f"✅ 出庫並記帳完成\n客戶：{result['customer']}\n訂單：{result['order_no']}\n"
              f"本筆金額：{result['amount']:,.2f}元\n{balance_text(result['debt'])}\n上限：{result['credit_limit']:,.2f}元")
     if testing:
-        summary='【測試】\n'+summary+'\n僅記錄測試帳，不寫入正式銷售試算表。'
+        summary='【測試】\n'+summary+'\n已記錄測試帳與「測試銷售紀錄」，不計入正式銷售。'
     if result['debt']>=result['credit_limit']:
         summary+='\n⛔ 已達上限，請管理員登記收款或調帳後再拿卡。'
     if not sheet_ok or not stock_ok:
