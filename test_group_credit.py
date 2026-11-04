@@ -229,10 +229,22 @@ class TransactionTests(unittest.TestCase):
         db=MemoryDB(limit='905',debt='905');s=service(db)
         s.manage(GROUP,USER,'payment','payment','905','銀行入帳',True)
         self.assertEqual(self.buy(s)['debt'],D('905'))
-    def test_overpayment_rejected(self):
-        db=MemoryDB(debt='100');before=copy.deepcopy(db.state)
-        with self.assertRaises(CreditError):service(db).manage(GROUP,USER,'m','payment','101','銀行',True)
-        self.assertEqual(db.state,before)
+    def test_overpayment_keeps_prepaid_and_sale_consumes_it(self):
+        db=MemoryDB(debt='100');s=service(db)
+        self.assertEqual(s.manage(GROUP,USER,'m','payment','1100','銀行',True)['debt'],D('-1000'))
+        self.assertEqual(self.buy(s)['debt'],D('-95'))
+        self.assertEqual(self.buy(s,event='second')['debt'],D('810'))
+    def test_prepaid_still_enforces_credit_limit(self):
+        db=MemoryDB(limit='100',debt='-805');s=service(db)
+        self.assertEqual(self.buy(s)['debt'],D('100'))
+        with self.assertRaises(CreditError):self.buy(s,event='over-cap')
+        self.assertEqual(db.state['account']['debt'],D('100'))
+    def test_prepaid_does_not_bypass_disabled_or_membership(self):
+        for disabled in (True,False):
+            db=MemoryDB(debt='-2000',enabled=not disabled)
+            if not disabled:db.state['members'][USER]=False
+            with self.assertRaises(CreditError):self.buy(service(db))
+            self.assertEqual(db.state['account']['debt'],D('-2000'))
     def test_adjustment_needs_reason(self):
         db=MemoryDB()
         with self.assertRaises(CreditError):service(db).manage(GROUP,USER,'m','charge','20','',True)

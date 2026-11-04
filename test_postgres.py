@@ -140,12 +140,13 @@ class PostgreSQLTests(unittest.TestCase):
         with self.assertRaises(CreditError):self.service.confirm_cancel(GROUP,USER,p['token'],True)
         self.assertEqual(self.debt(),905)
         self.assertEqual(sql('SELECT count(*) FROM group_credit_cancelled_orders',fetch=True)[0][0],0)
-    def test_prepaid_or_already_adjusted_balance_rejected(self):
+    def test_paid_card_refund_returns_prepaid_exactly_once(self):
         sale,p=self.cancel_prompt()
         self.service.manage(GROUP,USER,'pay','payment','905','已收款',True)
-        with self.assertRaises(CreditError):self.service.confirm_cancel(GROUP,USER,p['token'],True)
-        self.assertEqual(self.debt(),0)
-        self.assertEqual(sql('SELECT count(*) FROM active_transactions',fetch=True)[0][0],1)
+        self.service.confirm_cancel(GROUP,USER,p['token'],True)
+        self.assertTrue(self.service.confirm_cancel(GROUP,USER,p['token'],True)['duplicate'])
+        self.assertEqual(self.debt(),-905)
+        self.assertEqual(sql('SELECT count(*) FROM active_transactions',fetch=True)[0][0],0)
     def test_concurrent_admin_confirmations_only_one_refund(self):
         sale,p=self.cancel_prompt()
         q=self.service.request_cancel(GROUP,USER,'another-request',sale['order_no'],True)
@@ -415,11 +416,13 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(r['customer'],'測試');self.assertEqual(r['debt'],905)
         self.assertEqual(sql("SELECT debt FROM group_credit_accounts WHERE group_id=%s",(GROUP,),True)[0][0],0)
         self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],0)
-    def test_calculator_overpayment_rollback(self):
-        self.service.calculate(GROUP,USER,'charge','-905',True)
-        with self.assertRaises(CreditError):self.service.calculate(GROUP,USER,'over','+906',True)
-        self.assertEqual(self.debt(),905)
-        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator'",fetch=True)[0][0],1)
+    def test_calculator_overpayment_persists_prepaid(self):
+        self.service.calculate(GROUP,USER,'charge','-14525',True)
+        self.service.calculate(GROUP,USER,'over','+20000',True)
+        self.assertEqual(self.debt(),-5475)
+        self.buy()
+        self.assertEqual(self.debt(),-4570)
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator'",fetch=True)[0][0],2)
     def test_calculator_manual_charge_can_record_over_cap_but_sale_is_blocked(self):
         self.service.manage(GROUP,USER,'lowcap','limit','500',admin=True)
         self.service.calculate(GROUP,USER,'charge','-905',True)
@@ -513,9 +516,9 @@ class PostgreSQLTests(unittest.TestCase):
         r=self.service.calculate(GROUP,USER,'first','-905',True)
         p=request_reverse(self.service,GROUP,USER,'r',r['record_id'],'錯帳',True)
         self.service.calculate(GROUP,USER,'payment','+905',True)
-        with self.assertRaises(CreditError):confirm(self.service,GROUP,USER,p['token'],True)
-        self.assertEqual(self.debt(),0)
-        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator_reversal'",fetch=True)[0][0],0)
+        confirm(self.service,GROUP,USER,p['token'],True)
+        self.assertEqual(self.debt(),-905)
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator_reversal'",fetch=True)[0][0],1)
     def test_history_limits_and_excludes_pending_entries(self):
         from ledger_controls import history
         for i in range(12):self.service.calculate(GROUP,USER,'e'+str(i),'-'+str(i+1),True)
@@ -542,5 +545,73 @@ class PostgreSQLTests(unittest.TestCase):
         sql(Path(__file__).with_name('lock_inventory_summary.sql').read_text())
         self.assertFalse(sql("SELECT has_table_privilege('anon','public.inventory_summary','SELECT')",fetch=True)[0][0])
         self.assertEqual(sql('SELECT count(*) FROM public.inventory_summary',fetch=True)[0][0],3)
+
+    def test_undo_latest_manual_matches_screenshot_and_preserves_stock(self):
+        from ledger_controls import request_reverse,confirm
+        self.service.manage(GROUP,USER,'opening','charge','4525','既有欠款',True)
+        manual=self.service.calculate(GROUP,USER,'wrong','-10000',True)
+        pending=request_reverse(self.service,GROUP,USER,'undo',None,'管理員撤回手動記帳',True)
+        self.assertEqual(pending['reference'],manual['record_id']);self.assertEqual(self.debt(),14525)
+        result=confirm(self.service,GROUP,'U'+'f'*32,pending['token'],True)
+        self.assertEqual(result['debt'],4525)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='available'",fetch=True)[0][0],4)
+        self.assertEqual(sql("SELECT amount FROM group_credit_events WHERE event_id='wrong'",fetch=True)[0][0],10000)
+    def test_undo_latest_is_admin_only(self):
+        from ledger_controls import request_reverse
+        self.service.calculate(GROUP,USER,'manual','-905',True)
+        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'undo',None,'撤回')
+        self.assertEqual(self.debt(),905)
+    def test_undo_latest_never_skips_a_newer_sale(self):
+        from ledger_controls import request_reverse
+        self.service.calculate(GROUP,USER,'manual','-100',True)
+        self.buy()
+        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'undo',None,'撤回',True)
+        self.assertEqual(self.debt(),1005)
+    def test_undo_latest_never_walks_back_after_correction(self):
+        from ledger_controls import request_reverse,confirm
+        self.service.calculate(GROUP,USER,'first','-100',True)
+        self.service.calculate(GROUP,USER,'last','-200',True)
+        p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回',True)
+        confirm(self.service,GROUP,USER,p['token'],True)
+        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'undo-again',None,'撤回',True)
+        self.assertEqual(self.debt(),100)
+    def test_undo_latest_ignores_pending_and_readonly_queries(self):
+        from ledger_controls import request_reverse
+        r=self.service.calculate(GROUP,USER,'manual','-905',True)
+        self.service.calculate(GROUP,USER,'pending','-905',True)
+        self.service.calculate(GROUP,USER,'query','+0',True)
+        p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回',True)
+        self.assertEqual(p['reference'],r['record_id']);self.assertEqual(self.debt(),905)
+    def test_undo_latest_redelivery_keeps_original_target(self):
+        from ledger_controls import request_reverse
+        r=self.service.calculate(GROUP,USER,'manual','-100',True)
+        p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回',True)
+        self.service.calculate(GROUP,USER,'later','-200',True)
+        again=request_reverse(self.service,GROUP,USER,'undo',None,'撤回',True)
+        self.assertEqual(again['token'],p['token']);self.assertEqual(again['reference'],r['record_id'])
+    def test_undo_latest_empty_group_is_noop(self):
+        from ledger_controls import request_reverse
+        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'undo',None,'撤回',True)
+        self.assertEqual(self.debt(),0)
+
+    def test_prepaid_concurrent_sales_and_limit(self):
+        self.service.manage(GROUP,USER,'cap','limit','100',admin=True)
+        self.service.calculate(GROUP,USER,'cash','+1810',True)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(lambda i:self.buy('prepaid-sale'+str(i)),range(2)))
+        self.assertEqual(self.debt(),0)
+        with self.assertRaises(CreditError):self.buy('exceeds')
+        self.assertEqual(sql("SELECT sum(sale_amount) FROM transactions",fetch=True)[0][0],1810)
+
+    def test_prepaid_constraint_upgrade_preserves_existing_balance(self):
+        sql("ALTER TABLE group_credit_accounts DROP CONSTRAINT group_credit_accounts_debt_check; ALTER TABLE group_credit_accounts ADD CONSTRAINT group_credit_accounts_debt_check CHECK (debt>=0)")
+        sql(Path(__file__).with_name('enable_group_prepay.sql').read_text())
+        self.assertEqual(self.debt(),0)
+        self.service.calculate(GROUP,USER,'prepay','+1000',True)
+        self.assertEqual(self.debt(),-1000)
+        for invalid in ('NaN','10000000000000000','-10000000000000000'):
+            with self.assertRaises(psycopg2.Error):
+                sql('UPDATE group_credit_accounts SET debt=%s',(invalid,))
+        self.assertEqual(self.debt(),-1000)
 
 if __name__=='__main__':unittest.main(verbosity=2)

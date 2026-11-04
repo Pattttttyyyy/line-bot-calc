@@ -5,7 +5,8 @@ SET LOCAL statement_timeout = '15s';
 CREATE TABLE IF NOT EXISTS group_credit_accounts (
     group_id TEXT PRIMARY KEY,
     customer TEXT NOT NULL CHECK (customer <> ''),
-    debt NUMERIC(18,2) NOT NULL DEFAULT 0 CHECK (debt >= 0),
+    -- Signed net balance: positive is debt, negative is prepaid credit.
+    debt NUMERIC(18,2) NOT NULL DEFAULT 0 CHECK (debt BETWEEN -9999999999999999.99 AND 9999999999999999.99),
     credit_limit NUMERIC(18,2) CHECK (credit_limit > 0),
     enabled BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

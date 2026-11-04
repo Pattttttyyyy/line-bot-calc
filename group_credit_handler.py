@@ -1,5 +1,5 @@
 """Optional LINE adapter; dispatch only when the global feature flag is enabled."""
-from group_credit import CreditError, GroupCredit, TEST_CUSTOMER
+from group_credit import CreditError, GroupCredit, TEST_CUSTOMER, balance_text
 
 COMMANDS = {
     '/自助綁定':'bind', '/欠款上限':'limit', '/增加欠款':'charge',
@@ -43,7 +43,7 @@ def handle_group_credit(event, ns):
                 ns['reply'](event,'這則管理指令已處理，不會重複調帳。')
             elif action=='status':
                 limit=result['credit_limit']
-                ns['reply'](event,f"群組客戶：{result['customer']}\n目前欠款：{result['debt']:,.2f}元\n欠款上限："+
+                ns['reply'](event,f"群組客戶：{result['customer']}\n{balance_text(result['debt'])}\n欠款上限："+
                             (f'{limit:,.2f}元' if limit is not None else '尚未設定')+
                             ('\n自助拿卡：開放' if result['enabled'] else '\n自助拿卡：關閉'))
             else:
@@ -54,7 +54,7 @@ def handle_group_credit(event, ns):
                         'approve':'已核准此群組拿卡權限','revoke':'已停止此群組拿卡權限'}
                 hint = ('\n測試群僅可 /test100*數量；每張原價1000、售價905元。\n請設定 /欠款上限 金額、/自助核准 成員ID，最後 /開放自助。'
                         if action=='bind' and value==TEST_CUSTOMER else '')
-                ns['reply'](event,f"✅ {labels[action]}\n目前欠款：{result['debt']:,.2f}元"+hint)
+                ns['reply'](event,f"✅ {labels[action]}\n{balance_text(result['debt'])}"+hint)
             return True
         if command=='/自助撤回':
             parts=text.split()
@@ -126,8 +126,8 @@ def handle_group_credit_postback(event,ns):
             except Exception:
                 stock_ok=False
         text=(f"↩️ 管理員已確認未使用並撤回\n訂單：{result['order_no']}\n"
-              f"回收：{result['quantity']}張\n扣回欠款：{result['amount']:,.2f}元\n"
-              f"目前欠款：{result['debt']:,.2f}元")
+              f"回收：{result['quantity']}張\n退款入帳：{result['amount']:,.2f}元\n"
+              f"{balance_text(result['debt'])}")
         if not sales_ok or not stock_ok:
             text+='\n⚠️ 資料庫已撤回，試算表尚未同步完整；勿再次調帳，請管理員核對。'
         ns['reply'](event,text)
@@ -150,7 +150,7 @@ def deliver_sale(event,ns,service,group_id,event_id,result):
         except Exception:
             stock_ok=False
     summary=(f"✅ 出庫並記帳完成\n客戶：{result['customer']}\n訂單：{result['order_no']}\n"
-             f"本筆金額：{result['amount']:,.2f}元\n群組欠款：{result['debt']:,.2f}元\n上限：{result['credit_limit']:,.2f}元")
+             f"本筆金額：{result['amount']:,.2f}元\n{balance_text(result['debt'])}\n上限：{result['credit_limit']:,.2f}元")
     if testing:
         summary='【測試】\n'+summary+'\n僅記錄測試帳，不寫入正式銷售試算表。'
     if result['debt']>=result['credit_limit']:

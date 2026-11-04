@@ -56,7 +56,11 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(money_text('0.005'),'0.01')
         for value in ('NaN','Infinity'):
             with self.assertRaises(ValueError):money_text(value)
-        r=result();r['debt']=D('0')
+        r=result();r['debt']=D('-95')
+        data=json.dumps(receipt_bubble(r),ensure_ascii=False)
+        self.assertIn('預付款餘額',data);self.assertIn('95.00',data)
+        self.assertIn('原預付款',data);self.assertNotIn('-95.00',data)
+        r['amount']=D('-1')
         with self.assertRaises(ValueError):receipt_bubble(r)
     def test_delivery_only_formats_and_mirrors_existing_order(self):
         data=result();namespace=ns();service=MagicMock()
