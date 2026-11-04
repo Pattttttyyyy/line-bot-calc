@@ -69,6 +69,45 @@ class AdapterTests(unittest.TestCase):
         self.assertIn('handler.add(PostbackEvent)',ast.unparse(fn))
         self.assertIn('handle_group_credit_postback(event, globals())',ast.unparse(fn))
 
+class TestSalesMirrorTests(unittest.TestCase):
+    def test_test_cancel_marks_only_dedicated_sales(self):
+        from group_credit_handler import reply_cancel_result
+        ns=namespace();ns['get_sales_sheet']=MagicMock(return_value='TEST_SHEET')
+        ns['mark_sales_rows_undone_in_sheet']=MagicMock(return_value=True)
+        result=dict(customer='測試',order_no='TX_TEST',quantity=1,amount=Decimal('905'),debt=Decimal('0'),items=[dict(order_no='CHILD')])
+        reply_cancel_result(SimpleNamespace(),result,ns)
+        ns['mark_sales_rows_undone_in_sheet'].assert_called_once_with(['CHILD'],'TEST_SHEET')
+        ns['mark_sales_rows_undone'].assert_not_called()
+    def test_sheet_created_once_and_preserves_headers(self):
+        from group_credit_sheet import get_test_sales_sheet,TEST_SALES_HEADERS
+        class Missing(Exception):pass
+        book=MagicMock();sheet=MagicMock();sheet.row_values.return_value=[]
+        book.worksheet.side_effect=Missing;book.add_worksheet.return_value=sheet
+        self.assertIs(get_test_sales_sheet(book,Missing,threading.RLock()),sheet)
+        sheet.append_row.assert_called_once_with(TEST_SALES_HEADERS,value_input_option='RAW')
+        book.worksheet.side_effect=None;book.worksheet.return_value=sheet;sheet.row_values.return_value=TEST_SALES_HEADERS
+        get_test_sales_sheet(book,Missing,threading.RLock())
+        self.assertEqual(sheet.append_row.call_count,1)
+    def test_incompatible_headers_are_not_overwritten(self):
+        from group_credit_sheet import get_test_sales_sheet
+        book=MagicMock();sheet=book.worksheet.return_value;sheet.row_values.return_value=['existing data']
+        with self.assertRaises(ValueError):get_test_sales_sheet(book,KeyError,threading.RLock())
+        sheet.append_row.assert_not_called();book.add_worksheet.assert_not_called()
+
+    def test_app_routes_test_sales_separately_and_keeps_formal_set(self):
+        from types import SimpleNamespace
+        tree=ast.parse((Path(__file__).parent/'app.py').read_text())
+        ns=dict(spreadsheet=MagicMock(),gspread=SimpleNamespace(WorksheetNotFound=KeyError),
+                PRODUCT_SHEET_WRITE_LOCK=threading.RLock(),SALES_SHEET_NAME='銷售紀錄',XUAN_SALES_SHEET_NAME='軒銷售紀錄')
+        for name in ('get_sales_sheet','get_sales_sheets'):
+            fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name)
+            exec(compile(ast.Module(body=[fn],type_ignores=[]),'<sales routing>','exec'),ns)
+        with patch('group_credit_sheet.get_test_sales_sheet',return_value='TEST_ONLY') as route:
+            self.assertEqual(ns['get_sales_sheet']('測試'),'TEST_ONLY')
+            route.assert_called_once()
+            route.reset_mock();ns['get_sales_sheets']();route.assert_not_called()
+        self.assertEqual([c.args[0] for c in ns['spreadsheet'].worksheet.call_args_list],['銷售紀錄','軒銷售紀錄'])
+
 class MirrorTests(unittest.TestCase):
     def setup_ns(self,rows):
         conn=MagicMock();cur=conn.cursor.return_value.__enter__.return_value;cur.fetchall.return_value=rows

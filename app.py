@@ -91,6 +91,9 @@ def get_sales_sheet(customer=""):
     銷售紀錄採懶載入。
     即使 Google Sheet 暫時有問題，也不要讓整台 LINE Bot 啟動失敗。
     """
+    if str(customer or "").strip() == "測試":
+        from group_credit_sheet import get_test_sales_sheet
+        return get_test_sales_sheet(spreadsheet,gspread.WorksheetNotFound,PRODUCT_SHEET_WRITE_LOCK)
     name = XUAN_SALES_SHEET_NAME if str(customer or "").strip() == "軒" else SALES_SHEET_NAME
     return spreadsheet.worksheet(name)
 
@@ -1287,7 +1290,7 @@ def append_sales_rows(
                 "",
                 item["product"]["code"],
                 item["order_no"],
-                "待補",
+                "測試已記錄" if str(customer or "").strip() == "測試" else "待補",
                 "",
             ])
 
