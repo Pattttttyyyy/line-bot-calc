@@ -564,9 +564,12 @@ class PostgreSQLTests(unittest.TestCase):
     def test_undo_latest_never_skips_a_newer_sale(self):
         from ledger_controls import request_reverse
         self.service.calculate(GROUP,USER,'manual','-100',True)
-        self.buy()
-        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'undo',None,'撤回',True)
+        sale=self.buy()
+        p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回',True)
+        self.assertEqual(p['undo_kind'],'sale');self.assertEqual(p['order_no'],sale['order_no'])
         self.assertEqual(self.debt(),1005)
+        self.service.confirm_cancel(GROUP,USER,p['token'],True)
+        self.assertEqual(self.debt(),100)
     def test_undo_latest_never_walks_back_after_correction(self):
         from ledger_controls import request_reverse,confirm
         self.service.calculate(GROUP,USER,'first','-100',True)
@@ -613,5 +616,63 @@ class PostgreSQLTests(unittest.TestCase):
             with self.assertRaises(psycopg2.Error):
                 sql('UPDATE group_credit_accounts SET debt=%s',(invalid,))
         self.assertEqual(self.debt(),-1000)
+
+    def test_undo_card_replay_keeps_target_after_newer_manual_and_sale(self):
+        from ledger_controls import request_reverse
+        first=self.buy('first')
+        p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動',True)
+        self.service.calculate(GROUP,USER,'later-manual','-100',True)
+        self.buy('second')
+        again=request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動',True)
+        self.assertEqual(again['token'],p['token']);self.assertEqual(again['order_no'],first['order_no'])
+        self.assertEqual(self.debt(),1910)
+
+    def test_undo_card_other_admin_refunds_prepaid_once(self):
+        from ledger_controls import request_reverse
+        self.service.calculate(GROUP,USER,'cash','+2000',True)
+        self.buy()
+        p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動',True)
+        self.assertEqual(self.debt(),-1095)
+        r=self.service.confirm_cancel(GROUP,'U'+'f'*32,p['token'],True)
+        self.assertEqual(r['debt'],-2000)
+        self.assertTrue(self.service.confirm_cancel(GROUP,USER,p['token'],True)['duplicate'])
+        self.assertEqual(self.debt(),-2000)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='available'",fetch=True)[0][0],4)
+
+    def test_undo_card_requires_admin_before_pending_write(self):
+        from ledger_controls import request_reverse
+        self.buy()
+        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動')
+        self.assertEqual(sql('SELECT count(*) FROM group_credit_cancel_requests',fetch=True)[0][0],0)
+        self.assertEqual(self.debt(),905)
+
+    def test_undo_after_card_recovery_does_not_skip_to_older_sale(self):
+        from ledger_controls import request_reverse
+        self.buy('old');self.buy('new')
+        p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動',True)
+        self.service.confirm_cancel(GROUP,USER,p['token'],True)
+        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'again',None,'撤回上一動',True)
+        self.assertEqual(self.debt(),905)
+
+    def test_undo_test_card_does_not_touch_real_account(self):
+        from ledger_controls import request_reverse
+        other=self.setup_test_group()
+        sale=self.service.buy(other,USER,'test-sale',[dict(product_text='test100',quantity=1)])
+        p=request_reverse(self.service,other,USER,'undo',None,'撤回上一動',True)
+        self.assertEqual(p['order_no'],sale['order_no'])
+        self.service.confirm_cancel(other,USER,p['token'],True)
+        self.assertEqual(sql('SELECT debt FROM group_credit_accounts WHERE group_id=%s',(other,),True)[0][0],0)
+        self.assertEqual(sql('SELECT debt FROM group_credit_accounts WHERE group_id=%s',(GROUP,),True)[0][0],0)
+
+    def test_undo_card_expiry_and_decline_preserve_sale(self):
+        from ledger_controls import request_reverse
+        self.buy()
+        p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動',True)
+        self.service.confirm_cancel(GROUP,USER,p['token'],True,True)
+        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動',True)
+        q=request_reverse(self.service,GROUP,USER,'new-request',None,'撤回上一動',True)
+        sql("UPDATE group_credit_cancel_requests SET expires_at=now()-interval '1 second' WHERE token=%s",(q['token'],))
+        with self.assertRaises(CreditError):self.service.confirm_cancel(GROUP,USER,q['token'],True)
+        self.assertEqual(self.debt(),905)
 
 if __name__=='__main__':unittest.main(verbosity=2)

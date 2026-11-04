@@ -5,7 +5,7 @@ from decimal import Decimal, DecimalException, ROUND_HALF_UP, localcontext
 from group_credit import CreditError, GroupCredit, MAX_MONEY, balance_values
 
 TRANSLATION = str.maketrans('＋－−×÷（）０１２３４５６７８９', '+--*/()0123456789')
-LEDGER_COMMANDS = ('/記帳紀錄', '/更正記帳', '/撤銷記帳', '/撤回', '/確認記帳', '/取消記帳')
+LEDGER_COMMANDS = ('/記帳紀錄', '/更正記帳', '/撤銷記帳', '/撤回', '/撤回上一動', '/確認記帳', '/取消記帳')
 
 
 def looks_like_calculation(text):
@@ -117,9 +117,9 @@ def handle_calculator(event, ns):
                 lines.append(f"\n{when} {labels[row['kind']]}{'（已更正）' if row['corrected'] else ''}\n編號：{reference}\n帳款變動：{row['amount']:+,.2f}元\n欠款：{owed:,.2f}元；預付款：{prepaid:,.2f}元\n{row['reason'][:120]}")
             ns['reply'](event, '\n'.join(lines) if rows else '本群目前沒有記帳或拿卡紀錄。')
             return True
-        if command == '/撤回':
-            reference = parts[1] if len(parts)>1 else None
-            reason = parts[2] if len(parts)>2 else '管理員撤回手動記帳'
+        if command in ('/撤回','/撤回上一動'):
+            reference = parts[1] if len(parts)>1 and parts[1]!='上一動' else None
+            reason = parts[2] if len(parts)>2 else '管理員撤回上一動'
             result = request_reverse(service,group,operator,str(getattr(event.message,'id','') or ''),reference,reason,admin)
         elif command in ('/更正記帳','/撤銷記帳'):
             if len(parts)!=3: raise CreditError('格式：/更正記帳 記帳編號 原因；會先顯示文字確認。')
@@ -129,7 +129,11 @@ def handle_calculator(event, ns):
             result = confirm(service,group,operator,parts[1],admin,command=='/取消記帳')
         else:
             result = service.calculate(group, operator, str(getattr(event.message, 'id', '') or ''),text,admin)
-        reply_ledger(event,result,ns)
+        if result.get('undo_kind')=='sale':
+            from group_credit_handler import reply_cancel_prompt
+            reply_cancel_prompt(event,result,ns)
+        else:
+            reply_ledger(event,result,ns)
         return True
     except CreditError as exc:
         ns['reply'](event, str(exc))
