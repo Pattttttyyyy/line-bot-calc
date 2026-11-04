@@ -12,6 +12,9 @@ import secrets
 
 MY_FACES = {'MY1000': 1000, 'MY3000': 3000, 'MY5000': 5000, 'MY1萬': 10000}
 RATE = Decimal('0.905')
+TEST_CUSTOMER = '測試'
+TEST_CODE = 'test100'
+TEST_FACE = 1000
 MAX_MONEY = Decimal('9999999999999999.99')
 
 
@@ -31,12 +34,23 @@ def money(value, *, positive=False):
         raise CreditError('金額格式不正確。') from exc
 
 
-def quote(code, quantity):
-    if code not in MY_FACES:
+def customer_products(customer):
+    if customer == TEST_CUSTOMER:
+        return {TEST_CODE: TEST_FACE}
+    if customer == '軒':
+        return MY_FACES
+    raise CreditError('此客戶尚未設定自助商品與售價。')
+
+
+def quote(code, quantity, customer='軒'):
+    faces = customer_products(customer)
+    if code not in faces:
+        if customer == TEST_CUSTOMER:
+            raise CreditError('測試群只能拿 test100 測試卡，不能拿正式卡。')
         raise CreditError('這個商品尚未設定自助售價，目前僅開放MY卡。')
     if type(quantity) is not int or not 1 <= quantity <= 500:
         raise CreditError('數量需為1～500的整數。')
-    unit = (Decimal(MY_FACES[code]) * RATE).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    unit = (Decimal(faces[code]) * RATE).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
     return unit, money(unit * quantity)
 
 
@@ -125,8 +139,8 @@ class GroupCredit:
         try:
             with conn.cursor(cursor_factory=self.dict_cursor) as cur:
                 if command == 'bind':
-                    if value != '軒':
-                        raise CreditError('目前僅準備了軒的MY卡9.05折規則。')
+                    if value not in ('軒', TEST_CUSTOMER):
+                        raise CreditError('目前可綁定軒，或使用 /自助綁定 測試；測試卡原價1000、售價905元。')
                     cur.execute('SELECT pg_advisory_xact_lock(hashtext(%s))',(group_id,))
                     cur.execute('SELECT 1 FROM bot_ui_admin_groups WHERE group_id=%s',(group_id,))
                     if cur.fetchone():
@@ -202,7 +216,7 @@ class GroupCredit:
                     product = self.find_product(conn, item['product_text'])
                     if not product:
                         raise CreditError('找不到商品；整筆沒有出庫。')
-                    unit,amount = quote(product['code'], item['quantity'])
+                    unit,amount = quote(product['code'], item['quantity'], account['customer'])
                     prepared.append({'product':product,'quantity':item['quantity'],'unit_price':unit,'sale_amount':amount})
                 total = sum((x['sale_amount'] for x in prepared), Decimal('0'))
                 debt_after = checked_debt(account['debt'],account['credit_limit'],total,account['enabled'])
@@ -374,7 +388,7 @@ class GroupCredit:
                 self._event(cur,group_id,'cancel:'+token,'cancel',-amount,debt,operator,
                             reason='管理員確認未使用並回收 '+parent,child_orders=orders)
             conn.commit()
-            return dict(duplicate=False,order_no=parent,amount=amount,debt=debt,items=items,
+            return dict(duplicate=False,order_no=parent,amount=amount,debt=debt,items=items,customer=account['customer'],
                         quantity=sum(i['quantity'] for i in items))
         except Exception:
             conn.rollback()
