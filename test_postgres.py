@@ -675,4 +675,100 @@ class PostgreSQLTests(unittest.TestCase):
         with self.assertRaises(CreditError):self.service.confirm_cancel(GROUP,USER,q['token'],True)
         self.assertEqual(self.debt(),905)
 
+    def test_direct_undo_manual_atomic_audit_and_redelivery(self):
+        from ledger_controls import undo_previous
+        self.service.manage(GROUP,USER,'opening','charge','4525','既有帳',True)
+        source=self.service.calculate(GROUP,USER,'manual','-10000',True)
+        r=undo_previous(self.service,GROUP,USER,'direct',True)
+        self.assertEqual(self.debt(),4525);self.assertTrue(r['record_id'].startswith('AR'))
+        self.assertEqual(r['source_reference'],source['record_id'])
+        self.assertTrue(undo_previous(self.service,GROUP,USER,'direct',True)['duplicate'])
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator_reversal'",fetch=True)[0][0],1)
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator_reverse_pending'",fetch=True)[0][0],0)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='available'",fetch=True)[0][0],4)
+
+    def test_direct_undo_card_refund_and_stock_commit_together(self):
+        from ledger_controls import undo_previous
+        self.service.calculate(GROUP,USER,'prepaid','+2000',True)
+        sale=self.buy()
+        r=undo_previous(self.service,GROUP,'U'+'f'*32,'direct',True)
+        self.assertEqual(r['order_no'],sale['order_no']);self.assertTrue(r['record_id'].startswith('RC'))
+        self.assertEqual(self.debt(),-2000)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='available'",fetch=True)[0][0],4)
+        self.assertEqual(sql('SELECT count(*) FROM active_transactions',fetch=True)[0][0],0)
+        self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],1)
+        self.assertEqual(sql("SELECT reason FROM group_credit_events WHERE kind='cancel'",fetch=True)[0][0],'管理員直接撤回發卡 '+sale['order_no'])
+        self.assertTrue(undo_previous(self.service,GROUP,USER,'direct',True)['duplicate'])
+        self.assertEqual(self.debt(),-2000)
+
+    def test_direct_undo_bad_card_rolls_back_request_and_balance(self):
+        from ledger_controls import undo_previous
+        self.buy()
+        sql("UPDATE serials SET sold_to='tampered' WHERE status='sold'")
+        with self.assertRaises(CreditError):undo_previous(self.service,GROUP,USER,'direct',True)
+        self.assertEqual(self.debt(),905)
+        self.assertEqual(sql('SELECT count(*) FROM group_credit_cancel_requests',fetch=True)[0][0],0)
+        self.assertEqual(sql('SELECT count(*) FROM group_credit_cancelled_orders',fetch=True)[0][0],0)
+
+    def test_direct_undo_root_only_and_no_walkback(self):
+        from ledger_controls import undo_previous
+        self.buy('first');self.buy('second')
+        with self.assertRaises(CreditError):undo_previous(self.service,GROUP,USER,'forbidden')
+        undo_previous(self.service,GROUP,USER,'direct',True)
+        with self.assertRaises(CreditError):undo_previous(self.service,GROUP,USER,'another',True)
+        self.assertEqual(self.debt(),905)
+
+    def test_direct_undo_cash_receipt_reverses_prepaid(self):
+        from ledger_controls import undo_previous
+        self.service.calculate(GROUP,USER,'payment','+20000',True)
+        undo_previous(self.service,GROUP,USER,'direct',True)
+        self.assertEqual(self.debt(),0)
+
+    def test_direct_undo_concurrent_redelivery_one_refund(self):
+        from ledger_controls import undo_previous
+        self.buy()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(lambda _:undo_previous(self.service,GROUP,USER,'same',True),range(2)))
+        self.assertEqual(sum(not r.get('duplicate') for r in results),1)
+        self.assertEqual(self.debt(),0)
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='cancel'",fetch=True)[0][0],1)
+
+    def test_direct_undo_test_account_isolated_from_real_stock(self):
+        from ledger_controls import undo_previous
+        other=self.setup_test_group()
+        self.service.buy(other,USER,'test',[dict(product_text='test100',quantity=1)])
+        undo_previous(self.service,other,USER,'direct',True)
+        self.assertEqual(sql('SELECT debt FROM group_credit_accounts WHERE group_id=%s',(other,),True)[0][0],0)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE product_id=1 AND status='available'",fetch=True)[0][0],4)
+        self.assertEqual(sql('SELECT count(*) FROM active_transactions',fetch=True)[0][0],0)
+
+    def test_direct_undo_replay_does_not_target_newer_action(self):
+        from ledger_controls import undo_previous
+        self.buy('first')
+        r=undo_previous(self.service,GROUP,USER,'direct',True)
+        self.buy('second')
+        again=undo_previous(self.service,GROUP,USER,'direct',True)
+        self.assertTrue(again['duplicate']);self.assertEqual(again['record_id'],r['record_id'])
+        self.assertEqual(self.debt(),905)
+
+    def test_direct_undo_audit_failure_rolls_back_card_and_money(self):
+        from ledger_controls import undo_previous
+        from unittest.mock import patch
+        self.buy()
+        with patch.object(self.service,'_event',side_effect=RuntimeError('audit unavailable')):
+            with self.assertRaises(RuntimeError):undo_previous(self.service,GROUP,USER,'direct',True)
+        self.assertEqual(self.debt(),905)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],1)
+        self.assertEqual(sql('SELECT count(*) FROM group_credit_cancelled_orders',fetch=True)[0][0],0)
+        self.assertEqual(sql('SELECT count(*) FROM group_credit_cancel_requests',fetch=True)[0][0],0)
+
+    def test_direct_undo_manual_audit_failure_rolls_back_balance(self):
+        from ledger_controls import undo_previous
+        from unittest.mock import patch
+        self.service.calculate(GROUP,USER,'manual','-1000',True)
+        with patch.object(self.service,'_event',side_effect=RuntimeError('audit unavailable')):
+            with self.assertRaises(RuntimeError):undo_previous(self.service,GROUP,USER,'direct',True)
+        self.assertEqual(self.debt(),1000)
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator_reversal'",fetch=True)[0][0],0)
+
 if __name__=='__main__':unittest.main(verbosity=2)

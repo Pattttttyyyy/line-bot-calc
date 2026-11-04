@@ -242,3 +242,53 @@ def confirm(svc, group, user, token, admin=False, decline=False):
         conn.rollback()
         raise
     finally: conn.close()
+
+
+def undo_previous(svc, group, user, message, admin=False, reference=None):
+    """Root-only direct undo; stock and balance commit in one transaction."""
+    identity(group,user,message,admin)
+    event='undo:'+str(message)
+    conn=svc.get_db()
+    try:
+        with conn.cursor(cursor_factory=svc.dict_cursor) as cur:
+            account=svc._account(cur,group)
+            previous=svc._previous(cur,group,event)
+            if previous:
+                conn.rollback()
+                return dict(previous,record_id=previous['order_no'])
+            cur.execute('SELECT token FROM group_credit_cancel_requests WHERE group_id=%s AND message_id=%s',(group,event))
+            previous_card=cur.fetchone()
+            if previous_card:
+                result=svc._confirm_cancel(cur,account,group,user,previous_card['token'],direct=True)
+                result['undo_kind']='sale'
+            else:
+                if reference is None:
+                    cur.execute("""SELECT event_id,order_no,kind FROM group_credit_events
+                        WHERE group_id=%s AND kind=ANY(%s)
+                        ORDER BY created_at DESC,event_id DESC LIMIT 1""",
+                        (group,list(MANUAL)+['sale','cancel','calculator_reversal']))
+                    latest=cur.fetchone()
+                    if not latest:
+                        raise CreditError('本群沒有可撤回的記帳或發卡。')
+                    if latest['kind'] in ('cancel','calculator_reversal'):
+                        raise CreditError('上一動已撤回，不會重複退款或自動往前撤其他筆。請用 /記帳紀錄 核對。')
+                    reference=latest['order_no'] or latest['event_id']
+                    if latest['kind']=='sale':
+                        pending_card=svc._request_cancel(cur,account,group,user,event,reference)
+                        result=svc._confirm_cancel(cur,account,group,user,pending_card['token'],direct=True)
+                        result['undo_kind']='sale'
+                    else:
+                        result=None
+                else:
+                    result=None
+                if result is None:
+                    source=original(cur,group,reference)
+                    result=write(svc,cur,account,user,event,-money(source['amount']),
+                                 '管理員直接撤回記帳 '+reference,'calculator_reversal',[source['event_id']])
+                    result.update(undo_kind='ledger',source_reference=reference)
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:conn.close()

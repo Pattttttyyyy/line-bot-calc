@@ -119,8 +119,17 @@ def handle_calculator(event, ns):
             return True
         if command in ('/撤回','/撤回上一動'):
             reference = parts[1] if len(parts)>1 and parts[1]!='上一動' else None
-            reason = parts[2] if len(parts)>2 else '管理員撤回上一動'
-            result = request_reverse(service,group,operator,str(getattr(event.message,'id','') or ''),reference,reason,admin)
+            from ledger_controls import undo_previous
+            result = undo_previous(service,group,operator,str(getattr(event.message,'id','') or ''),admin,reference)
+            if result.get('undo_kind')=='sale':
+                from group_credit_handler import reply_cancel_result
+                return reply_cancel_result(event,result,ns)
+            from group_credit import balance_text
+            if result.get('duplicate'):
+                ns['reply'](event,'此指令已處理，不會再次沖回。\n撤回編號：'+str(result.get('record_id','請查記帳紀錄')))
+            else:
+                ns['reply'](event,f"↩️ 已撤回記帳\n撤回編號：{result['record_id']}\n原記帳：{result['source_reference']}\n帳款調整：{result['amount']:+,.2f}元（正數退款／負數扣回款項）\n{balance_text(result['debt'])}")
+            return True
         elif command in ('/更正記帳','/撤銷記帳'):
             if len(parts)!=3: raise CreditError('格式：/更正記帳 記帳編號 原因；會先顯示文字確認。')
             result = request_reverse(service,group,operator,str(getattr(event.message,'id','') or ''),parts[1],parts[2],admin)

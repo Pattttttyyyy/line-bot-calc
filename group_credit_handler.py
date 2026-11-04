@@ -108,33 +108,37 @@ def handle_group_credit_postback(event,ns):
     try:
         result=service.confirm_cancel(group_id,operator,data.split(':',1)[1],
                                       ns['is_admin'](operator),decline=data.startswith('gc_cancel_decline:'))
-        if result.get('duplicate'):
-            ns['reply'](event,'此訂單已撤回，不會再次退帳或回收。\n訂單：'+result['order_no'])
-            return True
-        if result.get('declined'):
-            ns['reply'](event,'已取消撤回申請；訂單、欠款與庫存均未變更。')
-            return True
-        sales_ok,stock_ok=True,True
-        if result.get('customer') != TEST_CUSTOMER:
-            try:
-                sales_ok=ns['mark_sales_rows_undone']([i['order_no'] for i in result['items']])
-            except Exception:
-                sales_ok=False
-            try:
-                from group_credit_sheet import clear_recovered_product_sales
-                stock_ok=clear_recovered_product_sales(result['items'],ns)
-            except Exception:
-                stock_ok=False
-        text=(f"↩️ 管理員已確認未使用並撤回\n訂單：{result['order_no']}\n"
-              f"回收：{result['quantity']}張\n退款入帳：{result['amount']:,.2f}元\n"
-              f"{balance_text(result['debt'])}")
-        if not sales_ok or not stock_ok:
-            text+='\n⚠️ 資料庫已撤回，試算表尚未同步完整；勿再次調帳，請管理員核對。'
-        ns['reply'](event,text)
-        return True
+        return reply_cancel_result(event,result,ns)
     except CreditError as exc:
         ns['reply'](event,str(exc))
         return True
+
+
+def reply_cancel_result(event,result,ns):
+    if result.get('duplicate'):
+        ns['reply'](event,'此訂單已撤回，不會再次退帳或回收。\n原訂單：'+result['order_no']+'\n撤回編號：'+str(result.get('record_id','請查記帳紀錄')))
+        return True
+    if result.get('declined'):
+        ns['reply'](event,'已取消撤回申請；訂單、欠款與庫存均未變更。')
+        return True
+    sales_ok,stock_ok=True,True
+    if result.get('customer') != TEST_CUSTOMER:
+        try:
+            sales_ok=ns['mark_sales_rows_undone']([i['order_no'] for i in result['items']])
+        except Exception:
+            sales_ok=False
+        try:
+            from group_credit_sheet import clear_recovered_product_sales
+            stock_ok=clear_recovered_product_sales(result['items'],ns)
+        except Exception:
+            stock_ok=False
+    text=(f"↩️ 已撤回發卡\n撤回編號：{result.get('record_id','請查記帳紀錄')}\n原訂單：{result['order_no']}\n"
+          f"回收：{result['quantity']}張\n退款入帳：{result['amount']:,.2f}元\n"
+          f"{balance_text(result['debt'])}\n原卡密訊息仍保留；請管理員核對卡片未使用。")
+    if not sales_ok or not stock_ok:
+        text+='\n⚠️ 資料庫已撤回，試算表尚未同步完整；勿再次調帳，請管理員核對。'
+    ns['reply'](event,text)
+    return True
 
 
 def deliver_sale(event,ns,service,group_id,event_id,result):
