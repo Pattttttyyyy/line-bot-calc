@@ -108,6 +108,8 @@ def calculator_bubble(result):
                 text('正數收款減少欠款；負數增加欠款。\n拿卡已自動記帳，請勿再輸入同筆金額。', size='xxs', color='#999999')]
     if not result['enabled']:
         contents.append(text('自助拿卡目前關閉。', size='xs', color='#D95040'))
+    if result.get('record_id'):
+        contents.append(text('記帳編號：'+result['record_id'],size='xxs',color='#999999'))
     return dict(type='bubble', size='kilo', body=dict(type='box', layout='vertical',
                 paddingAll='16px', spacing='sm', contents=contents))
 
@@ -117,6 +119,7 @@ def reply_calculator(event, result, ns):
                f"{result['expression']} = {money_text(result['amount'])}\n"
                f"上次欠款：{money_text(result['previous_debt'])}元\n"
                f"目前欠款：{money_text(result['debt'])}元\n"
+               + (f"記帳編號：{result['record_id']}\n" if result.get('record_id') else '')
                + ('僅查詢，帳款未變更。' if result['amount']==0 else '已記帳，請勿重複輸入。'))
     try:
         from linebot.v3.messaging import (ApiClient, MessagingApi, ReplyMessageRequest,

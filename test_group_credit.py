@@ -55,6 +55,11 @@ class Cursor:
             value=db.state['members'].get(args[1]);self.rows=[] if value is None else [{'active':value}]
         elif s.startswith('SELECT kind,order_no'):
             ev=db.state['events'].get((args[0],args[1]));self.rows=[] if ev is None else [copy.deepcopy(ev)]
+        elif s.startswith('SELECT event_id FROM group_credit_events e'):
+            # Full timestamp/confirmation/concurrency coverage runs in PostgreSQL.
+            self.rows=[dict(event_id=eid) for (gid,eid),ev in db.state['events'].items()
+                       if gid==args[0] and ev.get('operator')==args[1]
+                       and ev['kind'] in args[2] and ev['amount']==args[3]][-1:]
         elif s.startswith('SELECT child_orders FROM group_credit_events'):
             self.rows=[copy.deepcopy(ev) for (gid,_),ev in db.state['events'].items() if gid==args[0] and ev['order_no']==args[1] and ev['kind']=='sale']
         elif s.startswith('SELECT s.serial,p.code,s.order_no'):
@@ -89,7 +94,7 @@ class Cursor:
             self.rows=[]
         elif s.startswith('INSERT INTO group_credit_events'):
             if db.fail_event:raise RuntimeError('simulated ledger write failure')
-            db.state['events'][(args[0],args[1])]=dict(kind=args[2],order_no=args[7],debt_after=args[4],delivery_status=args[9],amount=args[3],child_orders=json.loads(args[8]))
+            db.state['events'][(args[0],args[1])]=dict(kind=args[2],order_no=args[7],debt_after=args[4],delivery_status=args[9],amount=args[3],operator=args[5],child_orders=json.loads(args[8]))
         else:raise AssertionError('Unhandled query in transaction double: '+s[:90])
 
 

@@ -429,4 +429,118 @@ class PostgreSQLTests(unittest.TestCase):
         with self.assertRaises(CreditError):self.service.calculate('group:C'+'f'*32,USER,'charge','-905',True)
         self.assertEqual(sql('SELECT count(*) FROM group_credit_accounts',fetch=True)[0][0],1)
 
+    def test_repeat_new_message_prompts_without_adjusting(self):
+        self.service.calculate(GROUP,USER,'first','-905',True)
+        p=self.service.calculate(GROUP,USER,'again','-1000*0.905 #第二筆',True)
+        self.assertTrue(p['needs_confirmation']);self.assertEqual(self.debt(),905)
+        r=self.service.calculate(GROUP,USER,'again','-1000*0.905 #第二筆',True)
+        self.assertEqual(p['token'],r['token'])
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator'",fetch=True)[0][0],1)
+    def test_repeat_confirmation_exactly_once(self):
+        from ledger_controls import confirm
+        self.service.calculate(GROUP,USER,'first','-905',True)
+        p=self.service.calculate(GROUP,USER,'again','-905',True)
+        r=confirm(self.service,GROUP,USER,p['token'],True)
+        self.assertEqual(r['debt'],1810)
+        self.assertTrue(confirm(self.service,GROUP,USER,p['token'],True)['duplicate'])
+        self.assertEqual(self.debt(),1810)
+    def test_repeat_rejects_wrong_admin_group_nonadmin_and_expiry(self):
+        from ledger_controls import confirm
+        self.service.calculate(GROUP,USER,'first','-905',True)
+        p=self.service.calculate(GROUP,USER,'again','-905',True)
+        with self.assertRaises(CreditError):confirm(self.service,GROUP,'U'+'f'*32,p['token'],True)
+        with self.assertRaises(CreditError):confirm(self.service,GROUP,USER,p['token'])
+        other=self.setup_test_group()
+        with self.assertRaises(CreditError):confirm(self.service,other,USER,p['token'],True)
+        sql("UPDATE group_credit_events SET created_at=now()-interval '6 minutes' WHERE order_no=%s",(p['token'],))
+        with self.assertRaises(CreditError):confirm(self.service,GROUP,USER,p['token'],True)
+        self.assertEqual(sql("SELECT debt FROM group_credit_accounts WHERE group_id=%s",(GROUP,),True)[0][0],905)
+    def test_repeat_decline_is_final_and_preserves_debt(self):
+        from ledger_controls import confirm
+        self.service.calculate(GROUP,USER,'first','-905',True)
+        p=self.service.calculate(GROUP,USER,'again','-905',True)
+        self.assertTrue(confirm(self.service,GROUP,USER,p['token'],True,True)['declined'])
+        self.assertTrue(confirm(self.service,GROUP,USER,p['token'],True)['duplicate'])
+        self.assertEqual(self.debt(),905)
+    def test_repeat_confirmation_concurrent_only_once(self):
+        from ledger_controls import confirm
+        self.service.calculate(GROUP,USER,'first','-905',True)
+        p=self.service.calculate(GROUP,USER,'again','-905',True)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            rows=list(pool.map(lambda _:confirm(self.service,GROUP,USER,p['token'],True),range(2)))
+        self.assertEqual(sum(not r.get('duplicate') for r in rows),1);self.assertEqual(self.debt(),1810)
+    def test_repeat_different_admin_or_old_amount_does_not_trigger(self):
+        self.service.calculate(GROUP,USER,'first','-905',True)
+        self.assertFalse(self.service.calculate(GROUP,'U'+'f'*32,'other-admin','-905',True).get('needs_confirmation'))
+        sql("UPDATE group_credit_events SET created_at=now()-interval '121 seconds'")
+        self.assertFalse(self.service.calculate(GROUP,USER,'later','-905',True).get('needs_confirmation'))
+        self.assertEqual(self.debt(),2715)
+    def test_manual_correction_preserves_original_and_has_no_stock_effect(self):
+        from ledger_controls import request_reverse,confirm,history
+        r=self.service.calculate(GROUP,USER,'first','-905',True)
+        p=request_reverse(self.service,GROUP,USER,'request',r['record_id'],'金額輸入錯誤',True)
+        self.assertEqual(self.debt(),905)
+        c=confirm(self.service,GROUP,'U'+'f'*32,p['token'],True)
+        self.assertEqual(c['debt'],0)
+        self.assertEqual(sql("SELECT amount FROM group_credit_events WHERE event_id='first'",fetch=True)[0][0],905)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],0)
+        self.assertEqual(sql("SELECT count(*) FROM transactions",fetch=True)[0][0],0)
+        self.assertTrue(next(row for row in history(self.service,GROUP,USER,True) if row['event_id']=='first')['corrected'])
+    def test_two_correction_requests_cannot_refund_twice(self):
+        from ledger_controls import request_reverse,confirm
+        r=self.service.calculate(GROUP,USER,'first','-905',True)
+        p=request_reverse(self.service,GROUP,USER,'r1',r['record_id'],'錯帳',True)
+        q=request_reverse(self.service,GROUP,USER,'r2',r['record_id'],'錯帳',True)
+        confirm(self.service,GROUP,USER,p['token'],True)
+        with self.assertRaises(CreditError):confirm(self.service,GROUP,USER,q['token'],True)
+        self.assertTrue(confirm(self.service,GROUP,USER,p['token'],True)['duplicate'])
+        self.assertEqual(self.debt(),0)
+    def test_correction_rejects_sale_and_another_group(self):
+        from ledger_controls import request_reverse
+        sale=self.buy()
+        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'r',sale['order_no'],'錯帳',True)
+        r=self.service.calculate(GROUP,USER,'manual','-100',True)
+        other=self.setup_test_group()
+        with self.assertRaises(CreditError):request_reverse(self.service,other,USER,'r',r['record_id'],'錯帳',True)
+    def test_correction_permission_and_reason(self):
+        from ledger_controls import request_reverse,history
+        r=self.service.calculate(GROUP,USER,'first','-905',True)
+        with self.assertRaises(CreditError):history(self.service,GROUP,USER)
+        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'r',r['record_id'],'錯帳')
+        with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'r',r['record_id'],'',True)
+    def test_correction_rechecks_current_balance_after_prompt(self):
+        from ledger_controls import request_reverse,confirm
+        r=self.service.calculate(GROUP,USER,'first','-905',True)
+        p=request_reverse(self.service,GROUP,USER,'r',r['record_id'],'錯帳',True)
+        self.service.calculate(GROUP,USER,'payment','+905',True)
+        with self.assertRaises(CreditError):confirm(self.service,GROUP,USER,p['token'],True)
+        self.assertEqual(self.debt(),0)
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator_reversal'",fetch=True)[0][0],0)
+    def test_history_limits_and_excludes_pending_entries(self):
+        from ledger_controls import history
+        for i in range(12):self.service.calculate(GROUP,USER,'e'+str(i),'-'+str(i+1),True)
+        self.service.calculate(GROUP,USER,'pending','-12',True)
+        rows=history(self.service,GROUP,USER,True)
+        self.assertEqual(len(rows),10);self.assertTrue(all(r['kind']=='calculator' for r in rows))
+    def test_test_account_history_and_correction_stay_isolated(self):
+        from ledger_controls import request_reverse,confirm,history
+        other=self.setup_test_group()
+        r=self.service.calculate(other,USER,'first','-905',True)
+        p=request_reverse(self.service,other,USER,'r',r['record_id'],'測試更正',True)
+        confirm(self.service,other,USER,p['token'],True)
+        self.assertEqual(history(self.service,GROUP,USER,True),[])
+        self.assertEqual(sql("SELECT debt FROM group_credit_accounts WHERE group_id=%s",(other,),True)[0][0],0)
+    def test_other_admin_can_still_confirm_stock_withdrawal(self):
+        sale,p=self.cancel_prompt()
+        r=self.service.confirm_cancel(GROUP,'U'+'f'*32,p['token'],True)
+        self.assertEqual(r['debt'],0)
+        self.assertEqual(sql('SELECT confirmed_by FROM group_credit_cancelled_orders',fetch=True)[0][0],'U'+'f'*32)
+    def test_stock_summary_anonymous_access_revoked_owner_retained(self):
+        sql("CREATE ROLE anon")
+        sql("CREATE VIEW public.inventory_summary AS SELECT code FROM products")
+        sql("GRANT SELECT ON public.inventory_summary TO PUBLIC,anon")
+        sql(Path(__file__).with_name('lock_inventory_summary.sql').read_text())
+        self.assertFalse(sql("SELECT has_table_privilege('anon','public.inventory_summary','SELECT')",fetch=True)[0][0])
+        self.assertEqual(sql('SELECT count(*) FROM public.inventory_summary',fetch=True)[0][0],3)
+
 if __name__=='__main__':unittest.main(verbosity=2)

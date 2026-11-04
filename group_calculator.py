@@ -5,11 +5,33 @@ from decimal import Decimal, DecimalException, ROUND_HALF_UP, localcontext
 from group_credit import CreditError, GroupCredit, MAX_MONEY
 
 TRANSLATION = str.maketrans('＋－−×÷（）０１２３４５６７８９', '+--*/()0123456789')
+LEDGER_COMMANDS = ('/記帳紀錄', '/更正記帳', '/撤銷記帳', '/確認記帳', '/取消記帳')
 
 
 def looks_like_calculation(text):
     text = text.strip().translate(TRANSLATION)
-    return text.startswith('/計算') or bool(re.match(r'^[+-]\s*[0-9.(]', text))
+    command = text.split(maxsplit=1)[0] if text else ''
+    return (command == '/計算' or command in LEDGER_COMMANDS
+            or bool(re.match(r'^[+-]\s*[0-9.(]', text)))
+
+
+def reply_ledger(event, result, ns):
+    if result.get('needs_confirmation'):
+        amount = Decimal(result['amount'])
+        change = ('增加欠款 ' if amount < 0 else '減少欠款 ') + f'{abs(amount):,.2f}元'
+        title = ('⚠️ 120秒內出現相同金額，本次尚未記帳。' if result['request_kind']=='calculator_repeat_pending'
+                 else '更正申請：沖回原帳，保留原紀錄。本次尚未更正。')
+        detail = ('算式：'+result['expression'] if result.get('expression') else '原記帳：'+result['reference'])
+        ns['reply'](event, title+'\n'+detail+'\n本次將'+change+'\n備註：'+result.get('note','')+
+                    '\n5分鐘內確認請複製整行：\n/確認記帳 '+result['token']+
+                    '\n取消請輸入：\n/取消記帳 '+result['token'])
+    elif result.get('declined') or result.get('kind')=='calculator_declined':
+        ns['reply'](event, '已取消確認；本次未調整欠款。')
+    elif result.get('duplicate'):
+        ns['reply'](event, '這則指令已處理，不會重複調帳。請傳 +0 查帳，或 /記帳紀錄 查看明細。')
+    else:
+        from receipt_cards import reply_calculator
+        reply_calculator(event, result, ns)
 
 
 def parse_calculation(raw):
@@ -76,13 +98,33 @@ def handle_calculator(event, ns):
         return False
     try:
         operator = ns['get_operator'](event)
-        result = service.calculate(group, operator, str(getattr(event.message, 'id', '') or ''),
-                                   event.message.text, ns['is_admin'](operator))
-        if result.get('duplicate'):
-            ns['reply'](event, '這則算式已記帳，不會重複加減。請傳 +0 查看目前帳況。')
+        admin = ns['is_admin'](operator)
+        text = event.message.text.strip()
+        parts = text.split(maxsplit=2)
+        command = parts[0] if parts else ''
+        from ledger_controls import history, request_reverse, confirm
+        if command == '/記帳紀錄':
+            if len(parts)!=1: raise CreditError('格式：/記帳紀錄（顯示最近10筆）。')
+            rows = history(service, group, operator, admin)
+            from zoneinfo import ZoneInfo
+            lines = ['本群最近10筆帳目｜正數增加欠款、負數減少欠款']
+            labels = dict(calculator='手動記帳',charge='增加欠款',payment='登記收款',
+                          adjust_credit='減少欠款',sale='自助拿卡',cancel='發卡撤回',calculator_reversal='記帳更正')
+            for row in rows:
+                reference = row['order_no'] or row['event_id']
+                when = row['created_at'].astimezone(ZoneInfo('Asia/Taipei')).strftime('%m/%d %H:%M')
+                lines.append(f"\n{when} {labels[row['kind']]}{'（已更正）' if row['corrected'] else ''}\n編號：{reference}\n欠款變動：{row['amount']:+,.2f}元；餘額：{row['debt_after']:,.2f}元\n{row['reason'][:120]}")
+            ns['reply'](event, '\n'.join(lines) if rows else '本群目前沒有記帳或拿卡紀錄。')
+            return True
+        if command in ('/更正記帳','/撤銷記帳'):
+            if len(parts)!=3: raise CreditError('格式：/更正記帳 記帳編號 原因；會先顯示文字確認。')
+            result = request_reverse(service,group,operator,str(getattr(event.message,'id','') or ''),parts[1],parts[2],admin)
+        elif command in ('/確認記帳','/取消記帳'):
+            if len(parts)!=2: raise CreditError('請複製申請回覆中的完整確認或取消指令。')
+            result = confirm(service,group,operator,parts[1],admin,command=='/取消記帳')
         else:
-            from receipt_cards import reply_calculator
-            reply_calculator(event, result, ns)
+            result = service.calculate(group, operator, str(getattr(event.message, 'id', '') or ''),text,admin)
+        reply_ledger(event,result,ns)
         return True
     except CreditError as exc:
         ns['reply'](event, str(exc))

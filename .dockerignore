@@ -7,6 +7,7 @@
 !text_commands.py
 !receipt_cards.py
 !group_calculator.py
+!ledger_controls.py
 !daily_report.py
 !group_credit.py
 !group_credit_handler.py
