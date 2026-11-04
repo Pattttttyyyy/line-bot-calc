@@ -376,4 +376,57 @@ class PostgreSQLTests(unittest.TestCase):
         with self.assertRaises(CreditError):self.service.manage(other,USER,'enable','enable',admin=True)
 
 
+    def test_calculator_charge_payment_and_zero_share_sale_balance(self):
+        self.buy()
+        r=self.service.calculate(GROUP,USER,'payment','+500 #匯款',True)
+        self.assertEqual(r['previous_debt'],905);self.assertEqual(r['debt'],405)
+        self.assertEqual(self.service.calculate(GROUP,USER,'query','+0')['debt'],405)
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator'",fetch=True)[0][0],1)
+        self.assertEqual(sql("SELECT amount FROM group_credit_events WHERE kind='calculator'",fetch=True)[0][0],-500)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],1)
+    def test_calculator_approved_nonadmin_never_changes_debt(self):
+        for raw in ('-905','+905','/計算 -1000*0.905'):
+            with self.assertRaises(CreditError):self.service.calculate(GROUP,USER,'try',raw)
+        self.assertEqual(self.debt(),0)
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator'",fetch=True)[0][0],0)
+    def test_calculator_zero_foreign_or_revoked_member_denied(self):
+        with self.assertRaises(CreditError):self.service.calculate(GROUP,'U'+'f'*32,'query','+0')
+        self.service.manage(GROUP,USER,'revoke','revoke',USER,admin=True)
+        with self.assertRaises(CreditError):self.service.calculate(GROUP,USER,'query','+0')
+    def test_calculator_zero_no_ledger_write(self):
+        count=sql('SELECT count(*) FROM group_credit_events',fetch=True)[0][0]
+        self.service.calculate(GROUP,USER,'query','+0')
+        self.assertEqual(sql('SELECT count(*) FROM group_credit_events',fetch=True)[0][0],count)
+    def test_calculator_concurrent_same_event_only_once(self):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(lambda _:self.service.calculate(GROUP,USER,'same','-905',True),range(2)))
+        self.assertEqual(sum(not r.get('duplicate') for r in results),1)
+        self.assertEqual(self.debt(),905)
+        self.assertEqual(sql("SELECT count(*) FROM transactions",fetch=True)[0][0],0)
+    def test_calculator_serializes_concurrent_sale_and_payment(self):
+        self.service.calculate(GROUP,USER,'opening','-1000',True)
+        def run(i):
+            return self.buy('sale') if i==0 else self.service.calculate(GROUP,USER,'payment','+500',True)
+        with ThreadPoolExecutor(max_workers=2) as pool:list(pool.map(run,range(2)))
+        self.assertEqual(self.debt(),1405)
+    def test_calculator_test_group_ledger_is_isolated(self):
+        other=self.setup_test_group()
+        r=self.service.calculate(other,USER,'charge','-1000*0.905',True)
+        self.assertEqual(r['customer'],'測試');self.assertEqual(r['debt'],905)
+        self.assertEqual(sql("SELECT debt FROM group_credit_accounts WHERE group_id=%s",(GROUP,),True)[0][0],0)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],0)
+    def test_calculator_overpayment_rollback(self):
+        self.service.calculate(GROUP,USER,'charge','-905',True)
+        with self.assertRaises(CreditError):self.service.calculate(GROUP,USER,'over','+906',True)
+        self.assertEqual(self.debt(),905)
+        self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator'",fetch=True)[0][0],1)
+    def test_calculator_manual_charge_can_record_over_cap_but_sale_is_blocked(self):
+        self.service.manage(GROUP,USER,'lowcap','limit','500',admin=True)
+        self.service.calculate(GROUP,USER,'charge','-905',True)
+        with self.assertRaises(CreditError):self.buy()
+        self.assertEqual(self.debt(),905)
+    def test_calculator_unbound_group_cannot_create_account(self):
+        with self.assertRaises(CreditError):self.service.calculate('group:C'+'f'*32,USER,'charge','-905',True)
+        self.assertEqual(sql('SELECT count(*) FROM group_credit_accounts',fetch=True)[0][0],1)
+
 if __name__=='__main__':unittest.main(verbosity=2)

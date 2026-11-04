@@ -3,16 +3,20 @@ import re
 from types import SimpleNamespace
 from bot_ui import UIStore, inventory_reply
 from group_credit import CreditError
+from group_calculator import looks_like_calculation, handle_calculator
 
 HELP = ('已改回文字指令，不再顯示按鈕。\n'
         '查庫存：/查庫存\n'
         '管理人員請沿用原本出入庫指令；/入庫 須附商品與卡片資料。\n'
         '客人自助群：/MY1000*數量、/MY3000*數量、/MY5000*數量、/1萬*數量\n'
         '測試自助群：/test100*數量（原價1000、售價905元，須先綁定測試帳戶）\n'
+        '群組計算機：+0 查帳；僅管理員可用正數收款、負數增加欠款（支援算式）\n'
         '自助帳況：/自助帳況；仍依原群組、核准成員與額度限制。')
 
 def handle_ui_text(event, ns):
     text = event.message.text.strip()
+    if looks_like_calculation(text):
+        return handle_calculator(event, ns)
     if not text.startswith('/'):
         return False
     group = ns['get_context_id'](event)

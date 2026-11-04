@@ -196,6 +196,47 @@ class GroupCredit:
         finally:
             conn.close()
 
+    def calculate(self, group_id, operator, event_id, raw, admin=False):
+        from group_calculator import parse_calculation
+        expression, amount, note = parse_calculation(raw)
+        group_context(group_id)
+        validate_identity(operator, event_id)
+        # Positive = receipt/payment, negative = charge, matching the calculator.
+        # Zero is a read-only balance lookup for an approved member or root admin.
+        if amount != 0 and not admin:
+            raise CreditError('⛔ 只有管理員可以記帳；核准成員可用 +0 查帳。')
+        conn = self.get_db()
+        try:
+            with conn.cursor(cursor_factory=self.dict_cursor) as cur:
+                account = self._account(cur, group_id)
+                if amount == 0:
+                    can_buy(cur, account, operator, admin)
+                else:
+                    previous = self._previous(cur, group_id, event_id)
+                    if previous:
+                        conn.rollback()
+                        return previous
+                before = money(account['debt'])
+                debt = money(before - amount)
+                if debt < 0:
+                    raise CreditError('收款金額超過目前欠款，整筆未記帳；目前不建立預付款。')
+                result = dict(duplicate=False, customer=account['customer'], expression=expression,
+                              amount=amount, previous_debt=before, debt=debt,
+                              credit_limit=account['credit_limit'], enabled=account['enabled'], note=note)
+                if amount == 0:
+                    conn.rollback()
+                    return result
+                cur.execute('UPDATE group_credit_accounts SET debt=%s,updated_at=now() WHERE group_id=%s', (debt, group_id))
+                reason = '計算機 ' + expression + (' #' + note if note else '')
+                self._event(cur, group_id, event_id, 'calculator', -amount, debt, operator, reason)
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def buy(self, group_id, operator, event_id, requested_items, admin=False, transaction=None):
         group_context(group_id)
         validate_identity(operator, event_id)

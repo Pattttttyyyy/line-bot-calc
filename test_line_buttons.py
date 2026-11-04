@@ -94,4 +94,31 @@ class LineSDKTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):reply_receipt(SimpleNamespace(reply_token='FAKE'),result(),'fallback',ns)
         ns['reply_messages'].assert_not_called()
 
+    def calculator_result(self):
+        return dict(customer='測試',expression='-1000*0.905',amount=Decimal('-905'),previous_debt=Decimal('0'),
+                    debt=Decimal('905'),credit_limit=Decimal('10000'),enabled=False,note='測試補帳')
+    def test_calculator_serializes_buttonless_flex(self):
+        from receipt_cards import reply_calculator
+        ns=dict(configuration=Configuration(access_token='FAKE'),reply=MagicMock())
+        with patch('linebot.v3.messaging.ApiClient'),patch('linebot.v3.messaging.MessagingApi') as api:
+            reply_calculator(SimpleNamespace(reply_token='FAKE'),self.calculator_result(),ns)
+        request=api.return_value.reply_message.call_args.args[0].to_dict()
+        self.assertEqual(len(request['messages']),1)
+        self.assertEqual(request['messages'][0]['type'],'flex')
+        self.assertIn('905.00',str(request));self.assertNotIn('action',str(request))
+        ns['reply'].assert_not_called()
+    def test_calculator_local_render_error_falls_back_before_send(self):
+        from receipt_cards import reply_calculator
+        ns=dict(configuration=Configuration(access_token='FAKE'),reply=MagicMock())
+        with patch('receipt_cards.calculator_bubble',side_effect=ValueError),patch('linebot.v3.messaging.MessagingApi') as api:
+            reply_calculator(SimpleNamespace(reply_token='FAKE'),self.calculator_result(),ns)
+        api.assert_not_called();ns['reply'].assert_called_once()
+    def test_calculator_transport_error_never_sends_fallback(self):
+        from receipt_cards import reply_calculator
+        ns=dict(configuration=Configuration(access_token='FAKE'),reply=MagicMock())
+        with patch('linebot.v3.messaging.ApiClient'),patch('linebot.v3.messaging.MessagingApi') as api:
+            api.return_value.reply_message.side_effect=TimeoutError
+            with self.assertRaises(TimeoutError):reply_calculator(SimpleNamespace(reply_token='FAKE'),self.calculator_result(),ns)
+        api.return_value.reply_message.assert_called_once();ns['reply'].assert_not_called()
+
 if __name__=='__main__':unittest.main()

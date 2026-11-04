@@ -26,7 +26,7 @@ Google Cloud網頁無法在GPT雲端瀏覽器開啟時，可改由GitHub Actions
 ## 測試
 
 Python 3.11 或 3.12：`python -X utf8 run_offline_tests.py`。
-這組 109 項測試不需正式憑證，不會連正式資料庫、Google Sheets 或 LINE。
+這組 125 項測試不需正式憑證，不會連正式資料庫、Google Sheets 或 LINE。
 官方 LINE SDK 序列化另以 `python -X utf8 -m unittest -q test_line_buttons.py` 驗證，所有發送介面皆 mock。
 
 PostgreSQL 整合測試須在隔離 Linux 測試環境執行 `python run_isolated_tests.py`。
@@ -57,7 +57,7 @@ daily_report.py 是獨立每日報表工作的程式，不代表每次機器人�
 - 新增維護文件與測試入口，擴充 Git／Docker 排除規則。
 - migration*.sql 僅保存已存在功能的結構參考，不是完整正式資料庫備份，也不可在正式環境自動執行。
 
-雲端發佈、查核與部署流程已啟用，見 DEPLOYMENT_SETUP.md、.github/workflows/cloud-control.yml、ops/。另有17項無憑證管道測試：`python -X utf8 -m unittest -q test_cloud_control.py`；連同109單元、9官方SDK mock、56隔離PostgreSQL，共191項。
+雲端發佈、查核與部署流程已啟用，見 DEPLOYMENT_SETUP.md、.github/workflows/cloud-control.yml、ops/。另有17項無憑證管道測試：`python -X utf8 -m unittest -q test_cloud_control.py`；連同125單元、12官方SDK mock、66隔離PostgreSQL，共220項。
 不自動修改資料庫結構，不發LINE測試訊息；保留原群組、Secret Manager與Webhooks設定。
 
 ## 客人測試群（2026-11-04）
@@ -67,3 +67,13 @@ daily_report.py 是獨立每日報表工作的程式，不代表每次機器人�
 - 測試帳戶僅可拿 test100，軒帳戶僅可拿既有MY商品；後端即使是管理員也不能繞過商品隔離。庫存查詢依帳戶過濾。
 - 測試訂單與欠款仍保留於資料庫，標示測試客戶；不寫入正式銷售試算表或商品銷售欄。撤回同樣不碰正式試算表，仍需原有兩步文字確認。
 - 沒有自動辨識LINE群組名稱，必須由管理員在正確群組綁定。改群名不會改變帳戶模式。不新增、清空或重置任何測試序號。
+
+## 群組計算機（2026-11-04）
+僅在已綁定自助帳戶的群組啟用；`GROUP_SELF_SERVICE_ENABLED` 仍維持既有總開關。一般聊天保持無回應。
+- 核准成員或主管理員傳 `+0`：讀取本群目前欠款與剩餘額度，回覆無按鈕Flex小卡，不寫入帳務事件。
+- 僅 `is_admin` 既有主管理員可手動記帳；`authorized_users`、群組核准拿卡成員不會因此獲得調帳權限。
+- 沿用參考計算機正負方向：`+1000` 是收到1000元、減少欠款；`-1000*0.905` 是增加905元欠款。亦可 `/計算 -1000*0.905 #補帳`；備註最多60字。
+- 支援數字、小數、加減乘除及小括號，Decimal最後四捨五入至分；拒絕eval、函式、次方、整除、指數、除以0及超長算式。每個手動記帳事件保存算式及備註。
+- 與自動拿卡共用同一群組帳戶鎖、訊息去重與帳款稽核。手動記帳不發卡、不扣庫存、不寫銷售試算表；測試帳與軒帳仍分開。收款超過欠款整筆拒絕，仍不建立預付款。
+- 管理員可補記超過額度的舊欠款，後續自助拿卡仍被額度攔截。拿卡已自動增加欠款，勿另外輸入同筆負數重複加帳。
+- 發送逾時不重送、不反向調帳；同一訊息重送不會重複調帳，可再傳+0查帳。小卡本機建構錯誤才在發送前降回文字。
