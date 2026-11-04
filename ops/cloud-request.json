@@ -1,6 +1,6 @@
 {
-  "mode": "check",
-  "source_sha": "",
-  "expected_revision": "",
-  "request_id": "post-deploy-verification-20261103"
+  "mode": "deploy",
+  "source_sha": "5800148849a996d2bedf8f919a3662f5b2c6c1ab",
+  "expected_revision": "line-bot-calc-gh-41792761975-1",
+  "request_id": "prepaid-admin-undo-20261104"
 }
