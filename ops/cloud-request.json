@@ -1,6 +1,6 @@
 {
   "mode": "deploy",
-  "source_sha": "5b83217ccc38b4a8637d42c4b315c5a4620437d0",
+  "source_sha": "93fb64d4e4d9f0217d14dc328edf684b6434f3c0",
   "expected_revision": "line-bot-calc-gh-41849382042-1",
-  "request_id": "mention-buyer-approval-sdk-fixture-20261104"
+  "request_id": "mention-buyer-membership-tests-20261104"
 }
