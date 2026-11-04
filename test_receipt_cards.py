@@ -20,6 +20,19 @@ def ns():
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_test_receipt_is_labelled_and_does_not_mirror_sales(self):
+        r=result();r['customer']='測試'
+        r['items'][0]['product']['code']='test100'
+        data=json.dumps(receipt_bubble(r),ensure_ascii=False)
+        self.assertIn('測試拿卡記帳完成',data)
+        self.assertIn('僅記錄此群測試帳',data)
+        namespace=ns();svc=MagicMock()
+        with patch('receipt_cards.reply_receipt') as reply:
+            deliver_sale(NS(),namespace,svc,'group:FAKE','FAKE',r)
+            self.assertIn('【測試】',reply.call_args.args[2])
+        namespace['append_sales_rows'].assert_not_called()
+        namespace['mark_product_sale'].assert_not_called()
+        svc.delivery.assert_called_once_with('group:FAKE','FAKE','delivered')
     def test_amounts_match_committed_sale_and_original_balance(self):
         data=json.dumps(receipt_bubble(result()),ensure_ascii=False)
         for value in ('NT$ 11.85','+ NT$ 9,050.00','NT$ 9,061.85','NT$ 40,938.15','9,050.00 × 1 = 9,050.00'):

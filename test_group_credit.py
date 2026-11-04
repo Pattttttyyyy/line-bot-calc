@@ -124,6 +124,31 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(CreditError):checked_debt(99000,100000,2000,True)
 
 
+class TestCustomerTests(unittest.TestCase):
+    def test_price_matches_xuan_my1000(self):
+        self.assertEqual(quote('test100',2,'測試'),quote('MY1000',2))
+    def test_production_cannot_buy_test_card(self):
+        with self.assertRaises(CreditError):quote('test100',1)
+    def test_test_cannot_buy_any_production_card(self):
+        for code in ('MY1000','MY3000','MY5000','MY1萬','貝1000'):
+            with self.subTest(code=code),self.assertRaises(CreditError):quote(code,1,'測試')
+    def test_unknown_customer_never_gets_default_price(self):
+        with self.assertRaises(CreditError):quote('MY1000',1,'其他')
+    def test_admin_cannot_bypass_test_product_boundary(self):
+        db=MemoryDB();db.state['account']['customer']='測試'
+        with self.assertRaises(CreditError):service(db).buy(GROUP,USER,'sale',[dict(product_text='MY1000',quantity=1)],True)
+        self.assertEqual(db.inventory_reads,0);self.assertEqual(db.state['account']['debt'],0)
+    def test_test_sale_prices_ledger_and_duplicate(self):
+        db=MemoryDB();db.state['account']['customer']='測試'
+        svc=service(db,{'test100':dict(id=1,code='test100')})
+        request=[dict(product_text='test100',quantity=2)]
+        r=svc.buy(GROUP,USER,'sale',request)
+        self.assertEqual(r['customer'],'測試');self.assertEqual(r['amount'],D('1810'))
+        self.assertTrue(svc.buy(GROUP,USER,'sale',request)['duplicate'])
+        self.assertEqual(db.state['account']['debt'],D('1810'))
+        self.assertEqual(db.inventory_reads,1)
+
+
 class TransactionTests(unittest.TestCase):
     def buy(self,s,event='message-1',qty=1,code='MY1000',user=USER):
         return s.buy(GROUP,user,event,[dict(product_text=code,quantity=qty)])

@@ -1,5 +1,5 @@
 """Optional LINE adapter; dispatch only when the global feature flag is enabled."""
-from group_credit import CreditError, GroupCredit
+from group_credit import CreditError, GroupCredit, TEST_CUSTOMER
 
 COMMANDS = {
     '/自助綁定':'bind', '/欠款上限':'limit', '/增加欠款':'charge',
@@ -52,7 +52,9 @@ def handle_group_credit(event, ns):
                         'payment':'已登記收款並減少欠款','adjust_credit':'已減少欠款',
                         'enable':'自助拿卡已開放','disable':'自助拿卡已關閉',
                         'approve':'已核准此群組拿卡權限','revoke':'已停止此群組拿卡權限'}
-                ns['reply'](event,f"✅ {labels[action]}\n目前欠款：{result['debt']:,.2f}元")
+                hint = ('\n測試群僅可 /test100*數量；每張原價1000、售價905元。\n請設定 /欠款上限 金額、/自助核准 成員ID，最後 /開放自助。'
+                        if action=='bind' and value==TEST_CUSTOMER else '')
+                ns['reply'](event,f"✅ {labels[action]}\n目前欠款：{result['debt']:,.2f}元"+hint)
             return True
         if command=='/自助撤回':
             parts=text.split()
@@ -75,7 +77,7 @@ def handle_group_credit(event, ns):
         # generic undo, balance commands, stock administration or other customers.
         parsed=ns['parse_quick_sale_message'](text)
         if not parsed or not parsed.get('ok'):
-            raise CreditError('此群組請用 /MY1000*數量、/MY3000*數量、/MY5000*數量、/1萬*數量，或 /自助帳況。其他出庫、撤回及調帳格式不適用。')
+            raise CreditError('軒群請用 /MY1000*數量、/MY3000*數量、/MY5000*數量、/1萬*數量；測試群請用 /test100*數量。查帳用 /自助帳況。其他出庫、撤回及調帳格式不適用。')
         result=service.buy(group_id,operator,event_id,parsed['items'],admin)
         if result.get('duplicate'):
             ns['reply'](event,f"這則訊息已處理，不會重複出庫或扣帳。\n訂單：{result.get('order_no') or '請管理員查核'}\n如沒收到卡片，請管理員使用 /自助補發 原訂單編號。")
@@ -112,15 +114,17 @@ def handle_group_credit_postback(event,ns):
         if result.get('declined'):
             ns['reply'](event,'已取消撤回申請；訂單、欠款與庫存均未變更。')
             return True
-        try:
-            sales_ok=ns['mark_sales_rows_undone']([i['order_no'] for i in result['items']])
-        except Exception:
-            sales_ok=False
-        try:
-            from group_credit_sheet import clear_recovered_product_sales
-            stock_ok=clear_recovered_product_sales(result['items'],ns)
-        except Exception:
-            stock_ok=False
+        sales_ok,stock_ok=True,True
+        if result.get('customer') != TEST_CUSTOMER:
+            try:
+                sales_ok=ns['mark_sales_rows_undone']([i['order_no'] for i in result['items']])
+            except Exception:
+                sales_ok=False
+            try:
+                from group_credit_sheet import clear_recovered_product_sales
+                stock_ok=clear_recovered_product_sales(result['items'],ns)
+            except Exception:
+                stock_ok=False
         text=(f"↩️ 管理員已確認未使用並撤回\n訂單：{result['order_no']}\n"
               f"回收：{result['quantity']}張\n扣回欠款：{result['amount']:,.2f}元\n"
               f"目前欠款：{result['debt']:,.2f}元")
@@ -134,16 +138,21 @@ def handle_group_credit_postback(event,ns):
 
 
 def deliver_sale(event,ns,service,group_id,event_id,result):
-    try:
-        sheet_ok=ns['append_sales_rows'](result['customer'],result['items'])
-    except Exception:
-        sheet_ok=False
-    try:
-        stock_ok=ns['mark_product_sale'](result['items'],result['customer'])
-    except Exception:
-        stock_ok=False
+    testing = result['customer'] == TEST_CUSTOMER
+    sheet_ok,stock_ok=True,True
+    if not testing:
+        try:
+            sheet_ok=ns['append_sales_rows'](result['customer'],result['items'])
+        except Exception:
+            sheet_ok=False
+        try:
+            stock_ok=ns['mark_product_sale'](result['items'],result['customer'])
+        except Exception:
+            stock_ok=False
     summary=(f"✅ 出庫並記帳完成\n客戶：{result['customer']}\n訂單：{result['order_no']}\n"
              f"本筆金額：{result['amount']:,.2f}元\n群組欠款：{result['debt']:,.2f}元\n上限：{result['credit_limit']:,.2f}元")
+    if testing:
+        summary='【測試】\n'+summary+'\n僅記錄測試帳，不寫入正式銷售試算表。'
     if result['debt']>=result['credit_limit']:
         summary+='\n⛔ 已達上限，請管理員登記收款或調帳後再拿卡。'
     if not sheet_ok or not stock_ok:

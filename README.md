@@ -26,7 +26,7 @@ Google Cloud網頁無法在GPT雲端瀏覽器開啟時，可改由GitHub Actions
 ## 測試
 
 Python 3.11 或 3.12：`python -X utf8 run_offline_tests.py`。
-這組 102 項測試不需正式憑證，不會連正式資料庫、Google Sheets 或 LINE。
+這組 109 項測試不需正式憑證，不會連正式資料庫、Google Sheets 或 LINE。
 官方 LINE SDK 序列化另以 `python -X utf8 -m unittest -q test_line_buttons.py` 驗證，所有發送介面皆 mock。
 
 PostgreSQL 整合測試須在隔離 Linux 測試環境執行 `python run_isolated_tests.py`。
@@ -57,5 +57,13 @@ daily_report.py 是獨立每日報表工作的程式，不代表每次機器人�
 - 新增維護文件與測試入口，擴充 Git／Docker 排除規則。
 - migration*.sql 僅保存已存在功能的結構參考，不是完整正式資料庫備份，也不可在正式環境自動執行。
 
-雲端發佈、查核與部署流程已啟用，見 DEPLOYMENT_SETUP.md、.github/workflows/cloud-control.yml、ops/。另有17項無憑證管道測試：`python -X utf8 -m unittest -q test_cloud_control.py`；連同102單元、9官方SDK mock、48隔離PostgreSQL，共176項。
+雲端發佈、查核與部署流程已啟用，見 DEPLOYMENT_SETUP.md、.github/workflows/cloud-control.yml、ops/。另有17項無憑證管道測試：`python -X utf8 -m unittest -q test_cloud_control.py`；連同109單元、9官方SDK mock、56隔離PostgreSQL，共191項。
 不自動修改資料庫結構，不發LINE測試訊息；保留原群組、Secret Manager與Webhooks設定。
+
+## 客人測試群（2026-11-04）
+- 管理員在指定的新群傳 `/自助綁定 測試`，建立獨立群組帳戶；預設關閉、欠款0、上限未設定。
+- 沿用軒的群組共用額度與核准成員規則：`/欠款上限 金額`、`/自助核准 LINE_ID`，最後 `/開放自助`。沒有軒帳戶可供複製的額度時不得猜測，也不會自動核准其他人。
+- `/test100*1` 從現存 test100 商品取一張；測試原價定義為1000，9.05折單價905。商品原名「測試商品100」不代表本次售價基準。
+- 測試帳戶僅可拿 test100，軒帳戶僅可拿既有MY商品；後端即使是管理員也不能繞過商品隔離。庫存查詢依帳戶過濾。
+- 測試訂單與欠款仍保留於資料庫，標示測試客戶；不寫入正式銷售試算表或商品銷售欄。撤回同樣不碰正式試算表，仍需原有兩步文字確認。
+- 沒有自動辨識LINE群組名稱，必須由管理員在正確群組綁定。改群名不會改變帳戶模式。不新增、清空或重置任何測試序號。

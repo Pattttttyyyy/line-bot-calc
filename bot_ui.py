@@ -2,7 +2,7 @@
 import json,re,secrets
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from group_credit import GroupCredit,CreditError,group_context,validate_identity,quote,checked_debt,MY_FACES
+from group_credit import GroupCredit,CreditError,group_context,validate_identity,quote,checked_debt,MY_FACES,customer_products
 
 PRODUCTS=(('MY1000','MYCARD1000'),('MY3000','MYCARD3000'),('MY5000','MYCARD5000'),('MY1萬','MYCARD10000'),
  ('貝500','貝殼幣500'),('貝1000','貝殼幣1000'),('貝1490','貝殼幣1490'),('貝2990','貝殼幣2990'),('大卡','藍鑽大卡'),('小卡','藍鑽小卡'))
@@ -84,8 +84,8 @@ class UIStore:
         account=self.credit.manage(group,user,'status','status',admin=admin)
         return False,account
     def inventory(self,group,user,admin):
-        management,_=self.authorize(group,user,admin)
-        codes=list(LABELS if management else MY_FACES)
+        management,account=self.authorize(group,user,admin)
+        codes=list(LABELS if management else customer_products(account['customer']))
         conn=self.ns['get_db']()
         try:
             with conn.cursor(cursor_factory=self.ns['RealDictCursor']) as cur:
@@ -302,7 +302,7 @@ def handle_ui_text(event,ns):
 def inventory_reply(event,ns,store,group,user,admin):
     rows=store.inventory(group,user,admin)
     time=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%m/%d %H:%M:%S')
-    ns['reply'](event,'📦 即時可售庫存\n'+'\n'.join(f'{LABELS[c]}：{n}張' for c,n in rows)+'\n查詢時間：'+time+'\n確認拿卡時會再檢查庫存。')
+    ns['reply'](event,'📦 即時可售庫存\n'+'\n'.join(f'{LABELS.get(c,c)}：{n}張' for c,n in rows)+'\n查詢時間：'+time+'\n確認拿卡時會再檢查庫存。')
 
 def handle_ui_postback(event,ns):
     data=str(getattr(event.postback,'data','') or '')

@@ -30,7 +30,8 @@ def receipt_bubble(result, sheet_ok=True, stock_ok=True):
                      for item in items[:6]]
     if len(items) > 6:
         product_lines.append(f'另 {len(items) - 6} 項，金額已包含於本次合計。')
-    body = [text('拿卡記帳完成', size='lg', weight='bold', color='#23A455'),
+    testing = result['customer'] == '測試'
+    body = [text('測試拿卡記帳完成' if testing else '拿卡記帳完成', size='lg', weight='bold', color='#23A455'),
             text('客戶：' + str(result['customer'])[:80], size='sm', color='#555555'),
             text('\n'.join(product_lines), size='xs', color='#777777'),
             dict(type='separator', margin='md', color='#EEEEEE'),
@@ -42,6 +43,8 @@ def receipt_bubble(result, sheet_ok=True, stock_ok=True):
             text('訂單：' + str(result['order_no'])[:100], size='xxs', color='#999999'),
             text('已自動記帳，請勿另外重複加帳。\n欠款／額度為本筆完成時的群組共用帳況。',
                  size='xxs', color='#999999')]
+    if testing:
+        body.append(text('測試卡原價 NT$ 1,000，售價 NT$ 905。\n僅記錄此群測試帳，不寫入正式銷售試算表。', size='xxs', color='#999999'))
     if debt >= limit:
         body.append(text('已達額度上限，請先聯繫管理員登記收款。', size='xs', color='#D95040'))
     if not sheet_ok or not stock_ok:
@@ -60,7 +63,8 @@ def reply_receipt(event, result, summary, ns, sheet_ok=True, stock_ok=True):
         messages = [TextMessage(text=chunk) for chunk in result['serial_chunks']]
         if not 1 <= len(messages) <= 4:
             raise ValueError('Unexpected card message count')
-        alt = (f"拿卡已記帳｜本次 NT$ {money_text(result['amount'])}｜"
+        prefix = '【測試】' if result['customer']=='測試' else ''
+        alt = (f"{prefix}拿卡已記帳｜本次 NT$ {money_text(result['amount'])}｜"
                f"欠款 NT$ {money_text(result['debt'])}｜{result['order_no']}")[:400]
         messages.append(FlexMessage(alt_text=alt, contents=FlexContainer.from_dict(
             receipt_bubble(result, sheet_ok, stock_ok))))

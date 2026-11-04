@@ -324,4 +324,56 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(context_role(group,USER,True,dict(get_db=connect)),'admin')
         self.assertIsNone(context_role(group,USER,False,dict(get_db=connect)))
 
+    def setup_test_group(self):
+        other='group:C'+'e'*32
+        sql("INSERT INTO products(code) VALUES ('test100')")
+        sql("INSERT INTO serials(product_id,serial,status) SELECT id,'FakeTestOnly_'||g,'available' FROM products CROSS JOIN generate_series(1,3) g WHERE code='test100'")
+        self.service.manage(other,USER,'bind','bind','測試',admin=True)
+        self.service.manage(other,USER,'limit','limit','1810',admin=True)
+        self.service.manage(other,USER,'approve','approve',USER,admin=True)
+        self.service.manage(other,USER,'enable','enable',admin=True)
+        return other
+    def test_test_group_only_test_stock_and_own_debt(self):
+        other=self.setup_test_group()
+        r=self.service.buy(other,USER,'test-sale',[dict(product_text='test100',quantity=2)])
+        self.assertEqual(r['amount'],Decimal('1810'))
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE product_id=1 AND status='available'",fetch=True)[0][0],4)
+        self.assertEqual(sql("SELECT debt FROM group_credit_accounts WHERE group_id=%s",(GROUP,),True)[0][0],0)
+        self.assertEqual(sql("SELECT debt FROM group_credit_accounts WHERE group_id=%s",(other,),True)[0][0],1810)
+        self.assertTrue(self.service.buy(other,USER,'test-sale',[dict(product_text='test100',quantity=2)])['duplicate'])
+    def test_test_group_blocks_real_cards_even_root(self):
+        other=self.setup_test_group()
+        with self.assertRaises(CreditError):self.service.buy(other,USER,'bad',[dict(product_text='MY1000',quantity=1)],True)
+        self.assertEqual(sql("SELECT count(*) FROM transactions",fetch=True)[0][0],0)
+    def test_real_group_blocks_test_card(self):
+        self.setup_test_group()
+        with self.assertRaises(CreditError):self.service.buy(GROUP,USER,'bad',[dict(product_text='test100',quantity=1)],True)
+    def test_mixed_test_real_request_rolls_back(self):
+        other=self.setup_test_group()
+        with self.assertRaises(CreditError):self.service.buy(other,USER,'mixed',[dict(product_text='test100',quantity=1),dict(product_text='MY1000',quantity=1)],True)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],0)
+    def test_test_cap_membership_and_revocation_are_enforced(self):
+        other=self.setup_test_group()
+        with self.assertRaises(CreditError):self.service.buy(other,'U'+'f'*32,'unknown',[dict(product_text='test100',quantity=1)])
+        self.service.buy(other,USER,'first',[dict(product_text='test100',quantity=2)])
+        with self.assertRaises(CreditError):self.service.buy(other,USER,'over',[dict(product_text='test100',quantity=1)])
+        self.service.manage(other,USER,'revoke','revoke',USER,admin=True)
+        with self.assertRaises(CreditError):self.service.buy(other,USER,'revoked',[dict(product_text='test100',quantity=1)])
+    def test_test_cancel_keeps_real_stock_and_account(self):
+        other=self.setup_test_group()
+        r=self.service.buy(other,USER,'first',[dict(product_text='test100',quantity=1)])
+        prompt=self.service.request_cancel(other,USER,'cancel',r['order_no'],True)
+        c=self.service.confirm_cancel(other,USER,prompt['token'],True)
+        self.assertEqual(c['customer'],'測試');self.assertEqual(c['debt'],0)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE product_id=1 AND status='available'",fetch=True)[0][0],4)
+    def test_rebind_cannot_convert_real_to_test(self):
+        with self.assertRaises(CreditError):self.service.manage(GROUP,USER,'switch','bind','測試',admin=True)
+        self.assertEqual(sql("SELECT customer FROM group_credit_accounts WHERE group_id=%s",(GROUP,),True)[0][0],'軒')
+    def test_test_bind_starts_closed_without_limit(self):
+        other='group:C'+'e'*32
+        self.service.manage(other,USER,'bind','bind','測試',admin=True)
+        self.assertEqual(sql("SELECT customer,debt,credit_limit,enabled FROM group_credit_accounts WHERE group_id=%s",(other,),True)[0],('測試',0,None,False))
+        with self.assertRaises(CreditError):self.service.manage(other,USER,'enable','enable',admin=True)
+
+
 if __name__=='__main__':unittest.main(verbosity=2)
