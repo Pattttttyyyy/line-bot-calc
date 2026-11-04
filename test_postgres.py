@@ -813,4 +813,48 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(self.debt(),0)
         with self.assertRaises(CreditError):undo_previous(self.service,GROUP,USER,'empty',True)
 
+    def test_mention_approve_revoke_is_group_scoped_and_not_ledger_admin(self):
+        from types import SimpleNamespace as N
+        from unittest.mock import MagicMock
+        from group_credit_handler import handle_group_credit
+        target='U'+'f'*32
+        ns=dict(get_context_id=lambda e:GROUP,get_operator=lambda e:USER,is_admin=lambda u:True,
+                get_db=connect,RealDictCursor=RealDictCursor,find_product=product,create_order_no=lambda:'TX_FAKE',split_text_chunks=lambda t:[t],reply=MagicMock())
+        for command,event in (('/自助核准','mention-approve'),('/自助停權','mention-revoke')):
+            msg=N(text=command+' @客人',id=event,mention=dict(mentionees=[dict(type='user',index=6,length=3,userId=target)]))
+            handle_group_credit(N(message=msg),ns)
+            if command=='/自助核准':
+                self.assertTrue(sql('SELECT approved FROM group_credit_members WHERE group_id=%s AND user_id=%s',(GROUP,target),True)[0][0])
+                with self.assertRaises(CreditError):self.service.calculate(GROUP,target,'charge','-1',False)
+                handle_group_credit(N(message=msg),ns)
+                self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE event_id='mention-approve'",fetch=True)[0][0],1)
+        self.assertFalse(sql('SELECT approved FROM group_credit_members WHERE group_id=%s AND user_id=%s',(GROUP,target),True)[0][0])
+        self.assertEqual(self.debt(),0)
+
+    def test_mention_nonadmin_does_not_grant_membership(self):
+        from types import SimpleNamespace as N
+        from unittest.mock import MagicMock
+        from group_credit_handler import handle_group_credit
+        target='U'+'f'*32
+        ns=dict(get_context_id=lambda e:GROUP,get_operator=lambda e:USER,is_admin=lambda u:False,get_db=connect,
+                RealDictCursor=RealDictCursor,find_product=product,create_order_no=lambda:'TX_FAKE',split_text_chunks=lambda t:[t],reply=MagicMock())
+        msg=N(text='/自助核准 @客人',id='forbidden',mention=dict(mentionees=[dict(type='user',index=6,length=3,userId=target)]))
+        handle_group_credit(N(message=msg),ns)
+        self.assertEqual(sql('SELECT count(*) FROM group_credit_members WHERE user_id=%s',(target,),True)[0][0],0)
+
+    def test_mention_grant_cannot_open_group_or_change_limit(self):
+        from types import SimpleNamespace as N
+        from unittest.mock import MagicMock
+        from group_credit_handler import handle_group_credit
+        other=self.setup_test_group()
+        self.service.manage(other,USER,'disable','disable',admin=True)
+        target='U'+'f'*32
+        ns=dict(get_context_id=lambda e:other,get_operator=lambda e:USER,is_admin=lambda u:True,get_db=connect,
+                RealDictCursor=RealDictCursor,find_product=product,create_order_no=lambda:'TX_FAKE',split_text_chunks=lambda t:[t],reply=MagicMock())
+        msg=N(text='/自助核准 @客人',id='grant',mention=dict(mentionees=[dict(type='user',index=6,length=3,userId=target)]))
+        handle_group_credit(N(message=msg),ns)
+        row=sql('SELECT enabled,credit_limit,debt FROM group_credit_accounts WHERE group_id=%s',(other,),True)[0]
+        self.assertEqual(row,(False,1810,0))
+        with self.assertRaises(CreditError):self.service.buy(other,target,'sale',[dict(product_text='test100',quantity=1)])
+
 if __name__=='__main__':unittest.main(verbosity=2)

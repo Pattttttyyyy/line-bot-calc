@@ -1,4 +1,5 @@
 """Optional LINE adapter; dispatch only when the global feature flag is enabled."""
+import re
 from group_credit import CreditError, GroupCredit, TEST_CUSTOMER, balance_text
 
 COMMANDS = {
@@ -7,6 +8,38 @@ COMMANDS = {
     '/開放自助':'enable', '/關閉自助':'disable',
     '/自助核准':'approve', '/自助停權':'revoke', '/自助帳況':'status',
 }
+
+
+def mentioned_buyer(message, command):
+    """Read only LINE-provided structured mention; never resolve display names."""
+    def field(obj,name,default=None):
+        if isinstance(obj,dict):
+            return obj.get(name,obj.get({'user_id':'userId','is_self':'isSelf'}.get(name,name),default))
+        actual=getattr(obj,'actual_instance',None)
+        return getattr(actual if actual is not None else obj,name,default)
+    mention=field(message,'mention')
+    mentions=field(mention,'mentionees',[]) or []
+    if len(mentions)!=1:
+        raise CreditError('請一次標記一位成員：'+command+' @某某某；不能標記全體。')
+    target=mentions[0]
+    if field(target,'type')!='user' or field(target,'is_self',False):
+        raise CreditError('請標記要拿卡的成員，不能選全體或機器人。')
+    user=field(target,'user_id','')
+    if not isinstance(user,str) or not re.fullmatch('U[0-9a-fA-F]{32}',user):
+        raise CreditError('LINE未提供這位成員的ID；請對方先加機器人好友或傳 /我的ID，再由管理員核准。')
+    raw=field(message,'text','').encode('utf-16-le')
+    index,length=field(target,'index'),field(target,'length')
+    if type(index) is not int or type(length) is not int or index<0 or length<=0 or 2*(index+length)>len(raw):
+        raise CreditError('標記資料不完整，請重新選取成員。')
+    try:
+        before=raw[:2*index].decode('utf-16-le').strip()
+        label=raw[2*index:2*(index+length)].decode('utf-16-le')
+        after=raw[2*(index+length):].decode('utf-16-le').strip()
+    except UnicodeError:
+        raise CreditError('標記位置無效，請重新選取成員。') from None
+    if before!=command or after or not label.startswith('@'):
+        raise CreditError('格式：'+command+' @某某某；請從LINE名單選取成員，不要另加文字。')
+    return user
 
 
 def handle_group_credit(event, ns):
@@ -27,7 +60,11 @@ def handle_group_credit(event, ns):
         if command in COMMANDS:
             action = COMMANDS[command]
             parts = text.split(maxsplit=2)
-            if action in ('enable','disable','status'):
+            if action in ('approve','revoke') and getattr(event.message,'mention',None):
+                if not admin:
+                    raise CreditError('⛔ 只有管理員可以核准或停止本群拿卡權限。')
+                value,reason=mentioned_buyer(event.message,command),''
+            elif action in ('enable','disable','status'):
                 if len(parts)!=1:
                     raise CreditError('這個指令不需附加參數。')
                 value,reason=None,''

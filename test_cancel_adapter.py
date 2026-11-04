@@ -108,6 +108,42 @@ class TestSalesMirrorTests(unittest.TestCase):
             route.reset_mock();ns['get_sales_sheets']();route.assert_not_called()
         self.assertEqual([c.args[0] for c in ns['spreadsheet'].worksheet.call_args_list],['銷售紀錄','軒銷售紀錄'])
 
+class MentionBuyerTests(unittest.TestCase):
+    def message(self,command='/自助核准',label='@阿 豪😀',**changes):
+        text='  '+command+' '+label+'  '
+        target=dict(type='user',userId='U'+'e'*32,index=len(('  '+command+' ').encode('utf-16-le'))//2,length=len(label.encode('utf-16-le'))//2)
+        target.update(changes)
+        return SimpleNamespace(text=text,id='mention-event',mention=dict(mentionees=[target]))
+    def test_structured_mention_name_with_spaces_and_emoji(self):
+        from group_credit_handler import mentioned_buyer
+        self.assertEqual(mentioned_buyer(self.message(),'/自助核准'),'U'+'e'*32)
+    def test_root_approve_and_revoke_use_existing_group_management(self):
+        for command,action in (('/自助核准','approve'),('/自助停權','revoke')):
+            ns=namespace();event=SimpleNamespace(message=self.message(command))
+            with patch('group_credit_handler.GroupCredit') as cls:
+                cls.return_value.manage.return_value=dict(debt=Decimal('0'))
+                self.assertTrue(handle_group_credit(event,ns))
+                cls.return_value.manage.assert_called_once_with(GROUP,USER,'mention-event',action,'U'+'e'*32,'',True)
+                cls.return_value.buy.assert_not_called()
+    def test_nonroot_cannot_approve_even_with_mention(self):
+        ns=namespace();ns['is_admin']=lambda u:False
+        with patch('group_credit_handler.GroupCredit') as cls:
+            handle_group_credit(SimpleNamespace(message=self.message()),ns)
+            cls.return_value.manage.assert_not_called()
+    def test_invalid_missing_id_bot_all_multiple_and_extra_text_fail(self):
+        from group_credit_handler import mentioned_buyer
+        cases=[self.message(type='all'),self.message(userId=None),self.message(isSelf=True),self.message(index=-1),self.message(length=9999)]
+        multi=self.message();multi.mention['mentionees']*=2;cases.append(multi)
+        extra=self.message();extra.text+=' extra';cases.append(extra)
+        for msg in cases:
+            with self.subTest(msg=msg),self.assertRaises(CreditError):mentioned_buyer(msg,'/自助核准')
+    def test_manual_id_still_supported(self):
+        ns=namespace();target='U'+'e'*32
+        with patch('group_credit_handler.GroupCredit') as cls:
+            cls.return_value.manage.return_value=dict(debt=Decimal('0'))
+            handle_group_credit(SimpleNamespace(message=SimpleNamespace(text='/自助核准 '+target,id='manual')),ns)
+            cls.return_value.manage.assert_called_once_with(GROUP,USER,'manual','approve',target,'',True)
+
 class MirrorTests(unittest.TestCase):
     def setup_ns(self,rows):
         conn=MagicMock();cur=conn.cursor.return_value.__enter__.return_value;cur.fetchall.return_value=rows
