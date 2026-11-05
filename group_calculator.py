@@ -114,6 +114,8 @@ def handle_calculator(event, ns):
                 reference = row['order_no'] or row['event_id']
                 when = row['created_at'].astimezone(ZoneInfo('Asia/Taipei')).strftime('%m/%d %H:%M')
                 owed, prepaid = balance_values(row['debt_after'])
+                if row['kind']=='sale' and row['reason'] in ('sheet:pending:v1','sheet:done:v1'):
+                    row['reason']='銷售試算表待同步' if row['reason']=='sheet:pending:v1' else '銷售試算表已同步'
                 lines.append(f"\n{when} {labels[row['kind']]}{'（已更正）' if row['corrected'] else ''}\n編號：{reference}\n帳款變動：{row['amount']:+,.2f}元\n欠款：{owed:,.2f}元；預付款：{prepaid:,.2f}元\n{row['reason'][:120]}")
             ns['reply'](event, '\n'.join(lines) if rows else '本群目前沒有記帳或拿卡紀錄。')
             return True
