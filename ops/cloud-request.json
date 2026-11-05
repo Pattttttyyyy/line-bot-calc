@@ -1,6 +1,6 @@
 {
   "mode": "deploy",
-  "source_sha": "80a05d1bc12c06fb44ba3c9ab49670d5a274f446",
+  "source_sha": "68b79dfe2e6ec538306147966d8159475ea31a76",
   "expected_revision": "line-bot-calc-gh-42017861319-1",
-  "request_id": "fast-group-delivery-20261105"
+  "request_id": "fast-group-delivery-verified-20261105"
 }
