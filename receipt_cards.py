@@ -45,8 +45,10 @@ def receipt_bubble(result, sheet_ok=True, stock_ok=True):
             text('訂單：' + str(result['order_no'])[:100], size='xxs', color='#999999'),
             text('已自動記帳，先扣預付款，餘額才列欠款，請勿重複加帳。\n帳況為本筆完成時快照。',
                  size='xxs', color='#999999')]
+    if result.get('sheet_pending'):
+        body.append(text('試算表接續同步；資料庫已記帳，請勿重複下單。',size='xxs',color='#999999'))
     if testing:
-        body.append(text('測試卡原價 NT$ 1,000，售價 NT$ 905。\n同步「測試銷售紀錄」，不計入正式銷售。', size='xxs', color='#999999'))
+        body.append(text('測試卡原價 NT$ 1,000，售價 NT$ 905。\n「測試銷售紀錄」另行同步，不計入正式銷售。', size='xxs', color='#999999'))
     if debt >= limit:
         body.append(row('可拿卡總額', 'NT$ 0.00'))
         body.append(text('已達額度上限，請先聯繫管理員登記收款。', size='xs', color='#D95040'))
