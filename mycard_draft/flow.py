@@ -9,6 +9,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 import re
 import math
+import time
 import unicodedata
 
 
@@ -17,6 +18,8 @@ class Refused(ValueError):
 
 
 class State(str, Enum):
+    CHECKING = 'checking'
+    REJECTED = 'rejected_before_payment'
     SENDING = 'sending'
     UNKNOWN = 'unknown'
     CONFIRMED = 'confirmed_pending_ledger'
@@ -34,6 +37,15 @@ def parse_points(text):
 
 
 @dataclass(frozen=True)
+class PaymentDetails:
+    # Immutable server-verified transaction snapshot, not raw QR parameters.
+    order_ref: str
+    payee_ref: str = field(repr=False)
+    face_amount: Decimal
+    currency: str
+
+
+@dataclass(frozen=True)
 class Intent:
     group: str
     operator: str
@@ -44,6 +56,7 @@ class Intent:
     points: int
     # Final rate is required from reviewed group configuration; no hidden default.
     rate: Decimal
+    expected_payment: PaymentDetails | None = None
 
     @property
     def amount(self):
@@ -57,12 +70,14 @@ class QRQuote:
     expires_at: float
     fingerprint: str  # Nonreversible QR identity; never the raw authCode / QR payload.
     operation: object = field(repr=False)  # Ephemeral; never serialize or log this.
+    payment: PaymentDetails | None = None
 
 
 @dataclass(frozen=True)
 class Confirmation:
     verified_success: bool
     transaction_ref: str
+    payment: PaymentDetails | None = None
 
 
 def check_intent(intent, quote, *, admin, enabled=False, max_points=None,
@@ -83,6 +98,17 @@ def check_intent(intent, quote, *, admin, enabled=False, max_points=None,
         raise Refused('尚未設定單筆上限，或本筆超過上限。')
     if not isinstance(intent.rate, Decimal) or not intent.rate.is_finite() or not 0 < intent.rate <= 1:
         raise Refused('群組扣點售價尚未確認。')
+    payment=quote.payment
+    if not isinstance(payment,PaymentDetails) or not isinstance(intent.expected_payment,PaymentDetails):
+        raise Refused('尚未取得扣點頁的完整交易資訊。')
+    if not payment.order_ref or not payment.payee_ref or payment.currency!='TWD':
+        raise Refused('扣點頁的訂單、收款對象或幣別未能確認。')
+    if (not isinstance(payment.face_amount,Decimal) or not payment.face_amount.is_finite()
+            or not Decimal('0') < payment.face_amount <= Decimal('9999999999999999.99')
+            or payment.face_amount != payment.face_amount.quantize(Decimal('.01'))):
+        raise Refused('扣點頁的交易金額不正確。')
+    if payment!=intent.expected_payment:
+        raise Refused('扣點頁金額或交易對象已變更，請重新核對。')
     if image_group != intent.group or image_operator != intent.operator:
         raise Refused('請由同一位管理員在本群貼QR圖後輸入扣點指令。')
     if None in (now, image_time, command_time) or not image_time <= command_time <= now:
@@ -104,8 +130,10 @@ def execute(intent, quote, journal, provider, ledger, **policy):
     """Provider-neutral draft. All supplied dependencies must meet the contract.
 
     journal.claim MUST atomically deduplicate message AND QR across processes,
-    reserve the wallet and group credit, and durably write SENDING before returning
-    new=True. Claims bind the full intent. No TTL may release SENDING/UNKNOWN.
+    reserve the wallet and group credit, and durably write CHECKING before returning
+    new=True. Claims bind the full intent including the verified page snapshot.
+    journal.sending MUST persist SENDING before confirm. No TTL releases a payment
+    attempt; unknown results retain the wallet/credit reservation for reconciliation.
     Existing commands return their saved state and NEVER call confirm again.
     journal.confirmed MUST persist the provider reference before ledger posting.
     ledger.book_once MUST atomically write the group event and amount once, with
@@ -117,8 +145,19 @@ def execute(intent, quote, journal, provider, ledger, **policy):
     if not claim.new:
         return claim.state
     try:
-        receipt = provider.confirm(quote.operation)
-        if not isinstance(receipt, Confirmation) or receipt.verified_success is not True or not receipt.transaction_ref:
+        # Re-read through the supported provider adapter, never follow arbitrary QR URLs.
+        refreshed=provider.refresh(quote.operation)
+        if not isinstance(refreshed,QRQuote) or refreshed.fingerprint!=quote.fingerprint:
+            raise Refused('QR交易識別已變更。')
+        check_intent(intent,refreshed,**dict(policy,now=time.time()))
+    except Exception:
+        # confirm has NOT been called; this specific reservation can be released.
+        journal.rejected(claim.reference)
+        return State.REJECTED
+    journal.sending(claim.reference)
+    try:
+        receipt = provider.confirm(refreshed.operation)
+        if not isinstance(receipt, Confirmation) or receipt.verified_success is not True or not receipt.transaction_ref or receipt.payment!=intent.expected_payment:
             # An error response alone is not proof the points were never taken.
             raise Refused('付款結果未能驗證。')
     except Exception:
