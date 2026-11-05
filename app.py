@@ -485,7 +485,7 @@ def mark_product_sale(items, customer):
 
             updates = []
             fallback = []
-            sale_date = product_sheet_date()
+            sale_date = item.get("sale_date") or product_sheet_date()
             sale_time = sheet_sale_time(item.get("order_no"))
 
             for index, serial in enumerate(serials):
@@ -1281,7 +1281,7 @@ def append_sales_rows(
         sale_date = sales_date_tw()
         for item in items:
             rows.append([
-                sale_date,
+                item.get("sale_date") or sale_date,
                 customer or "",
                 item["quantity"],
                 float(item["unit_price"]) if item.get("unit_price") is not None else "",
