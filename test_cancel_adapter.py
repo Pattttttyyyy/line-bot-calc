@@ -166,3 +166,28 @@ class MirrorTests(unittest.TestCase):
         conn.rollback.assert_called_once();conn.close.assert_called_once()
 
 if __name__=='__main__':unittest.main()
+
+
+class GroupSaleSyntaxTests(unittest.TestCase):
+    def test_case_and_separator_variants(self):
+        from group_credit_handler import normalize_group_sale
+        for code,canonical in [('my1000','MY1000'),('mY3000','MY3000'),('my5000','MY5000'),('my1萬','MY1萬'),('TEST100','test100'),('1萬','MY1萬'),('1000','MY1000'),('1千','MY1000'),('一千','MY1000'),('3000','MY3000'),('3千','MY3000'),('三千','MY3000'),('5000','MY5000'),('5千','MY5000'),('五千','MY5000'),('10000','MY1萬'),('一萬','MY1萬'),('my10000','MY1萬')]:
+            for separator in ('*','x','X',' ','  ',' x '):
+                with self.subTest(code=code,separator=separator):
+                    self.assertEqual(normalize_group_sale('/'+code+separator+'2'),'/'+canonical+'*2')
+        self.assertEqual(normalize_group_sale('/my1000 2\n/TEST100X1'),'/MY1000*2\n/test100*1')
+    def test_invalid_and_management_input_is_not_rewritten(self):
+        from group_credit_handler import normalize_group_sale
+        for raw in ('/my1000 -1','/my1000 1.5','/my1000 1 extra','/my1000x','/MY1000x2x3','/自助核准 Uabc','/test100 1\n/發 卡 1'):
+            self.assertEqual(normalize_group_sale(raw),raw)
+
+    def test_adapter_forwards_normalized_sale_through_existing_policy(self):
+        ns=namespace();ns['parse_quick_sale_message']=MagicMock(return_value={'ok':True,'items':[{'product_text':'MY1000','quantity':2}]})
+        event=SimpleNamespace(message=SimpleNamespace(text='/一千 X 2',id='syntax-event'))
+        with patch('group_credit_handler.GroupCredit') as cls,patch('group_credit_handler.deliver_sale') as deliver:
+            cls.return_value.registered.return_value=True
+            cls.return_value.buy.return_value={'duplicate':False}
+            handle_group_credit(event,ns)
+            ns['parse_quick_sale_message'].assert_called_once_with('/MY1000*2')
+            cls.return_value.buy.assert_called_once_with(GROUP,USER,'syntax-event',[{'product_text':'MY1000','quantity':2}],True)
+            deliver.assert_called_once()
