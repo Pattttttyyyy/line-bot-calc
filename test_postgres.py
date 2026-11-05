@@ -44,20 +44,32 @@ class PostgreSQLTests(unittest.TestCase):
     def buy(self,event='sale',qty=1):
         return self.service.buy(GROUP,USER,event,[dict(product_text='MY1000',quantity=qty)])
     def debt(self):return sql('SELECT debt FROM group_credit_accounts',fetch=True)[0][0]
+    def test_historical_sale_refund_keeps_original_905_after_rate_change(self):
+        old=self.buy('historical')
+        sql("UPDATE transactions SET unit_price=905,sale_amount=905 WHERE sold_to='軒'")
+        sql("UPDATE group_credit_events SET amount=905,debt_after=905 WHERE kind='sale'")
+        sql("UPDATE group_credit_accounts SET debt=905 WHERE group_id=%s",(GROUP,))
+        replay=self.buy('historical')
+        self.assertTrue(replay['duplicate']);self.assertEqual(replay['amount'],905)
+        request=self.service.request_cancel(GROUP,USER,'cancel-old',old['order_no'],True)
+        refunded=self.service.confirm_cancel(GROUP,USER,request['token'],True)
+        self.assertEqual(refunded['amount'],905);self.assertEqual(self.debt(),0)
+        self.assertEqual(self.buy('new-price')['amount'],900)
+
     def test_sale_and_case(self):
-        r=self.buy();self.assertEqual(self.debt(),Decimal('905'));self.assertEqual(r['items'][0]['serials'][0],'FakeMixedCase_1\npinLower_1')
+        r=self.buy();self.assertEqual(self.debt(),Decimal('900'));self.assertEqual(r['items'][0]['serials'][0],'FakeMixedCase_1\npinLower_1')
     def test_duplicate(self):
-        self.buy();self.assertTrue(self.buy()['duplicate']);self.assertEqual(self.debt(),Decimal('905'))
+        self.buy();self.assertTrue(self.buy()['duplicate']);self.assertEqual(self.debt(),Decimal('900'))
     def test_concurrent_shared_cap(self):
-        self.service.manage(GROUP,USER,'cap','limit','905',admin=True)
+        self.service.manage(GROUP,USER,'cap','limit','900',admin=True)
         def run(i):
             try:self.buy('sale'+str(i));return True
             except CreditError:return False
         with ThreadPoolExecutor(max_workers=2) as p:results=list(p.map(run,range(2)))
-        self.assertEqual(sum(results),1);self.assertEqual(self.debt(),Decimal('905'))
+        self.assertEqual(sum(results),1);self.assertEqual(self.debt(),Decimal('900'))
     def test_concurrent_same_event(self):
         with ThreadPoolExecutor(max_workers=2) as p:results=list(p.map(lambda _:self.buy(),range(2)))
-        self.assertEqual(sum(not r['duplicate'] for r in results),1);self.assertEqual(self.debt(),Decimal('905'))
+        self.assertEqual(sum(not r['duplicate'] for r in results),1);self.assertEqual(self.debt(),Decimal('900'))
     def test_insufficient_stock(self):
         with self.assertRaises(CreditError):self.buy(qty=5)
         self.assertEqual(self.debt(),0)
@@ -75,10 +87,10 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(self.debt(),15000)
     def test_resend(self):
         r=self.buy();again=self.service.resend(GROUP,USER,'resend',r['order_no'],True)
-        self.assertIn('FakeMixedCase_1',again['serial_chunks'][0]);self.assertEqual(self.debt(),905)
+        self.assertIn('FakeMixedCase_1',again['serial_chunks'][0]);self.assertEqual(self.debt(),900)
         self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],1)
     def test_uncertain_delivery(self):
-        self.buy();self.service.delivery(GROUP,'sale','uncertain');self.assertEqual(self.debt(),905)
+        self.buy();self.service.delivery(GROUP,'sale','uncertain');self.assertEqual(self.debt(),900)
         self.assertEqual(sql("SELECT delivery_status FROM group_credit_events WHERE kind='sale'",fetch=True)[0][0],'uncertain')
 
     def cancel_prompt(self):
@@ -86,7 +98,7 @@ class PostgreSQLTests(unittest.TestCase):
         return sale,self.service.request_cancel(GROUP,USER,'request-cancel',sale['order_no'],True)
     def test_cancel_prompt_does_not_recover_or_refund(self):
         sale,prompt=self.cancel_prompt()
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
         self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],1)
         self.assertEqual(len(prompt['token']),32)
         again=self.service.request_cancel(GROUP,USER,'request-cancel',sale['order_no'],True)
@@ -98,16 +110,16 @@ class PostgreSQLTests(unittest.TestCase):
     def test_confirmation_admin_only(self):
         sale,p=self.cancel_prompt()
         with self.assertRaises(CreditError):self.service.confirm_cancel(GROUP,USER,p['token'])
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
     def test_confirmation_refunds_recovers_and_preserves_order(self):
         sale,p=self.cancel_prompt()
         r=self.service.confirm_cancel(GROUP,USER,p['token'],True)
-        self.assertEqual(r['amount'],905);self.assertEqual(self.debt(),0)
+        self.assertEqual(r['amount'],900);self.assertEqual(self.debt(),0)
         self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],1)
         self.assertEqual(sql('SELECT count(*) FROM active_transactions',fetch=True)[0][0],0)
         self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='available'",fetch=True)[0][0],4)
         self.assertEqual(sql('SELECT confirmed_by FROM group_credit_cancelled_orders',fetch=True)[0][0],USER)
-        self.assertEqual(sql("SELECT amount FROM group_credit_events WHERE kind='cancel'",fetch=True)[0][0],-905)
+        self.assertEqual(sql("SELECT amount FROM group_credit_events WHERE kind='cancel'",fetch=True)[0][0],-900)
     def test_confirmation_duplicate_never_refunds_twice(self):
         sale,p=self.cancel_prompt()
         self.service.confirm_cancel(GROUP,USER,p['token'],True)
@@ -118,17 +130,17 @@ class PostgreSQLTests(unittest.TestCase):
         sale,p=self.cancel_prompt()
         sql("UPDATE group_credit_cancel_requests SET expires_at=now()-interval '1 minute'")
         with self.assertRaises(CreditError):self.service.confirm_cancel(GROUP,USER,p['token'],True)
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
     def test_cancelled_prompt_has_no_effect(self):
         sale,p=self.cancel_prompt()
         self.assertTrue(self.service.confirm_cancel(GROUP,USER,p['token'],True,True)['declined'])
         with self.assertRaises(CreditError):self.service.confirm_cancel(GROUP,USER,p['token'],True)
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
     def test_cross_group_button_rejected(self):
         sale,p=self.cancel_prompt();other='group:C'+'d'*32
         self.service.manage(other,USER,'bind-other','bind','軒',admin=True)
         with self.assertRaises(CreditError):self.service.confirm_cancel(other,USER,p['token'],True)
-        self.assertEqual(sql("SELECT debt FROM group_credit_accounts WHERE group_id=%s",(GROUP,),True)[0][0],905)
+        self.assertEqual(sql("SELECT debt FROM group_credit_accounts WHERE group_id=%s",(GROUP,),True)[0][0],900)
     def test_missing_original_order_rejected(self):
         with self.assertRaises(CreditError):self.service.request_cancel(GROUP,USER,'r','TX_NONEXISTENT',True)
     def test_child_order_resolves_entire_parent(self):
@@ -138,14 +150,14 @@ class PostgreSQLTests(unittest.TestCase):
         sale,p=self.cancel_prompt()
         sql("UPDATE serials SET sold_to='tampered' WHERE status='sold'")
         with self.assertRaises(CreditError):self.service.confirm_cancel(GROUP,USER,p['token'],True)
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
         self.assertEqual(sql('SELECT count(*) FROM group_credit_cancelled_orders',fetch=True)[0][0],0)
     def test_paid_card_refund_returns_prepaid_exactly_once(self):
         sale,p=self.cancel_prompt()
-        self.service.manage(GROUP,USER,'pay','payment','905','已收款',True)
+        self.service.manage(GROUP,USER,'pay','payment','900','已收款',True)
         self.service.confirm_cancel(GROUP,USER,p['token'],True)
         self.assertTrue(self.service.confirm_cancel(GROUP,USER,p['token'],True)['duplicate'])
-        self.assertEqual(self.debt(),-905)
+        self.assertEqual(self.debt(),-900)
         self.assertEqual(sql('SELECT count(*) FROM active_transactions',fetch=True)[0][0],0)
     def test_concurrent_admin_confirmations_only_one_refund(self):
         sale,p=self.cancel_prompt()
@@ -158,7 +170,7 @@ class PostgreSQLTests(unittest.TestCase):
         sale,p=self.cancel_prompt();self.service.confirm_cancel(GROUP,USER,p['token'],True)
         second=self.buy('new-sale')
         self.assertEqual(second['items'][0]['serials'][0],sale['items'][0]['serials'][0])
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
         self.assertEqual(sql('SELECT count(*) FROM active_transactions',fetch=True)[0][0],1)
         self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],2)
         with self.assertRaises(CreditError):self.service.resend(GROUP,USER,'resend-old',sale['order_no'],True)
@@ -167,7 +179,7 @@ class PostgreSQLTests(unittest.TestCase):
         sql("ALTER TABLE group_credit_events ADD CONSTRAINT reject_cancel_test CHECK(kind<>'cancel')")
         try:
             with self.assertRaises(psycopg2.IntegrityError):self.service.confirm_cancel(GROUP,USER,p['token'],True)
-            self.assertEqual(self.debt(),905)
+            self.assertEqual(self.debt(),900)
             self.assertEqual(sql('SELECT count(*) FROM group_credit_cancelled_orders',fetch=True)[0][0],0)
             self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],1)
         finally:sql('ALTER TABLE group_credit_events DROP CONSTRAINT reject_cancel_test')
@@ -190,7 +202,7 @@ class PostgreSQLTests(unittest.TestCase):
     def test_report_amount_excludes_cancelled_order(self):
         sale,p=self.cancel_prompt();self.service.confirm_cancel(GROUP,USER,p['token'],True)
         self.buy('second',qty=2)
-        self.assertEqual(sql('SELECT sum(quantity),sum(sale_amount) FROM active_transactions',fetch=True)[0],(2,Decimal('1810')))
+        self.assertEqual(sql('SELECT sum(quantity),sum(sale_amount) FROM active_transactions',fetch=True)[0],(2,Decimal('1800')))
         self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],2)
     def test_cancel_new_tables_have_rls(self):
         rows=sql("SELECT relrowsecurity FROM pg_class WHERE relname IN ('group_credit_cancel_requests','group_credit_cancelled_orders')",fetch=True)
@@ -227,9 +239,9 @@ class PostgreSQLTests(unittest.TestCase):
     def test_ui_sale_confirm_is_once(self):
         store,token=self.ui_sale_prompt()
         r=store.confirm(GROUP,USER,token,False)
-        self.assertEqual(r['kind'],'sale');self.assertEqual(self.debt(),905)
+        self.assertEqual(r['kind'],'sale');self.assertEqual(self.debt(),900)
         self.assertTrue(store.confirm(GROUP,USER,token,False)['duplicate'])
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
     def test_ui_foreign_member_cannot_confirm(self):
         store,token=self.ui_sale_prompt();other='U'+'c'*32
         self.service.manage(GROUP,USER,'approve-other','approve',other,admin=True)
@@ -304,7 +316,7 @@ class PostgreSQLTests(unittest.TestCase):
         with self.assertRaises(CreditError):store.confirm(GROUP,USER,token,False,expected_revision=old)
         self.assertEqual(self.debt(),0)
         store.confirm(GROUP,USER,token,False,expected_revision=new['revision'])
-        self.assertEqual(self.debt(),1810)
+        self.assertEqual(self.debt(),1800)
     def test_ui_old_stock_confirmation_cannot_confirm_replacement_data(self):
         store,group,token=self.ui_stock_prompt()
         old=store.pending(group,USER,all_states=True)['revision']
@@ -380,8 +392,8 @@ class PostgreSQLTests(unittest.TestCase):
     def test_calculator_charge_payment_and_zero_share_sale_balance(self):
         self.buy()
         r=self.service.calculate(GROUP,USER,'payment','+500 #匯款',True)
-        self.assertEqual(r['previous_debt'],905);self.assertEqual(r['debt'],405)
-        self.assertEqual(self.service.calculate(GROUP,USER,'query','+0')['debt'],405)
+        self.assertEqual(r['previous_debt'],900);self.assertEqual(r['debt'],400)
+        self.assertEqual(self.service.calculate(GROUP,USER,'query','+0')['debt'],400)
         self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator'",fetch=True)[0][0],1)
         self.assertEqual(sql("SELECT amount FROM group_credit_events WHERE kind='calculator'",fetch=True)[0][0],-500)
         self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],1)
@@ -409,7 +421,7 @@ class PostgreSQLTests(unittest.TestCase):
         def run(i):
             return self.buy('sale') if i==0 else self.service.calculate(GROUP,USER,'payment','+500',True)
         with ThreadPoolExecutor(max_workers=2) as pool:list(pool.map(run,range(2)))
-        self.assertEqual(self.debt(),1405)
+        self.assertEqual(self.debt(),1400)
     def test_calculator_test_group_ledger_is_isolated(self):
         other=self.setup_test_group()
         r=self.service.calculate(other,USER,'charge','-1000*0.905',True)
@@ -421,13 +433,13 @@ class PostgreSQLTests(unittest.TestCase):
         self.service.calculate(GROUP,USER,'over','+20000',True)
         self.assertEqual(self.debt(),-5475)
         self.buy()
-        self.assertEqual(self.debt(),-4570)
+        self.assertEqual(self.debt(),-4575)
         self.assertEqual(sql("SELECT count(*) FROM group_credit_events WHERE kind='calculator'",fetch=True)[0][0],2)
     def test_calculator_manual_charge_can_record_over_cap_but_sale_is_blocked(self):
         self.service.manage(GROUP,USER,'lowcap','limit','500',admin=True)
-        self.service.calculate(GROUP,USER,'charge','-905',True)
+        self.service.calculate(GROUP,USER,'charge','-900',True)
         with self.assertRaises(CreditError):self.buy()
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
     def test_calculator_unbound_group_cannot_create_account(self):
         with self.assertRaises(CreditError):self.service.calculate('group:C'+'f'*32,USER,'charge','-905',True)
         self.assertEqual(sql('SELECT count(*) FROM group_credit_accounts',fetch=True)[0][0],1)
@@ -599,12 +611,12 @@ class PostgreSQLTests(unittest.TestCase):
 
     def test_prepaid_concurrent_sales_and_limit(self):
         self.service.manage(GROUP,USER,'cap','limit','100',admin=True)
-        self.service.calculate(GROUP,USER,'cash','+1810',True)
+        self.service.calculate(GROUP,USER,'cash','+1800',True)
         with ThreadPoolExecutor(max_workers=2) as pool:
             list(pool.map(lambda i:self.buy('prepaid-sale'+str(i)),range(2)))
         self.assertEqual(self.debt(),0)
         with self.assertRaises(CreditError):self.buy('exceeds')
-        self.assertEqual(sql("SELECT sum(sale_amount) FROM transactions",fetch=True)[0][0],1810)
+        self.assertEqual(sql("SELECT sum(sale_amount) FROM transactions",fetch=True)[0][0],1800)
 
     def test_prepaid_constraint_upgrade_preserves_existing_balance(self):
         sql("ALTER TABLE group_credit_accounts DROP CONSTRAINT group_credit_accounts_debt_check; ALTER TABLE group_credit_accounts ADD CONSTRAINT group_credit_accounts_debt_check CHECK (debt>=0)")
@@ -625,14 +637,14 @@ class PostgreSQLTests(unittest.TestCase):
         self.buy('second')
         again=request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動',True)
         self.assertEqual(again['token'],p['token']);self.assertEqual(again['order_no'],first['order_no'])
-        self.assertEqual(self.debt(),1910)
+        self.assertEqual(self.debt(),1900)
 
     def test_undo_card_other_admin_refunds_prepaid_once(self):
         from ledger_controls import request_reverse
         self.service.calculate(GROUP,USER,'cash','+2000',True)
         self.buy()
         p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動',True)
-        self.assertEqual(self.debt(),-1095)
+        self.assertEqual(self.debt(),-1100)
         r=self.service.confirm_cancel(GROUP,'U'+'f'*32,p['token'],True)
         self.assertEqual(r['debt'],-2000)
         self.assertTrue(self.service.confirm_cancel(GROUP,USER,p['token'],True)['duplicate'])
@@ -644,7 +656,7 @@ class PostgreSQLTests(unittest.TestCase):
         self.buy()
         with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動')
         self.assertEqual(sql('SELECT count(*) FROM group_credit_cancel_requests',fetch=True)[0][0],0)
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
 
     def test_undo_after_card_recovery_does_not_skip_to_older_sale(self):
         from ledger_controls import request_reverse
@@ -652,7 +664,7 @@ class PostgreSQLTests(unittest.TestCase):
         p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回上一動',True)
         self.service.confirm_cancel(GROUP,USER,p['token'],True)
         with self.assertRaises(CreditError):request_reverse(self.service,GROUP,USER,'again',None,'撤回上一動',True)
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
 
     def test_undo_test_card_does_not_touch_real_account(self):
         from ledger_controls import request_reverse
@@ -673,7 +685,7 @@ class PostgreSQLTests(unittest.TestCase):
         q=request_reverse(self.service,GROUP,USER,'new-request',None,'撤回上一動',True)
         sql("UPDATE group_credit_cancel_requests SET expires_at=now()-interval '1 second' WHERE token=%s",(q['token'],))
         with self.assertRaises(CreditError):self.service.confirm_cancel(GROUP,USER,q['token'],True)
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
 
     def test_direct_undo_manual_atomic_audit_and_redelivery(self):
         from ledger_controls import undo_previous
@@ -706,7 +718,7 @@ class PostgreSQLTests(unittest.TestCase):
         self.buy()
         sql("UPDATE serials SET sold_to='tampered' WHERE status='sold'")
         with self.assertRaises(CreditError):undo_previous(self.service,GROUP,USER,'direct',True)
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
         self.assertEqual(sql('SELECT count(*) FROM group_credit_cancel_requests',fetch=True)[0][0],0)
         self.assertEqual(sql('SELECT count(*) FROM group_credit_cancelled_orders',fetch=True)[0][0],0)
 
@@ -750,7 +762,7 @@ class PostgreSQLTests(unittest.TestCase):
         self.buy('second')
         again=undo_previous(self.service,GROUP,USER,'direct',True)
         self.assertTrue(again['duplicate']);self.assertEqual(again['record_id'],r['record_id'])
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
 
     def test_direct_undo_audit_failure_rolls_back_card_and_money(self):
         from ledger_controls import undo_previous
@@ -758,7 +770,7 @@ class PostgreSQLTests(unittest.TestCase):
         self.buy()
         with patch.object(self.service,'_event',side_effect=RuntimeError('audit unavailable')):
             with self.assertRaises(RuntimeError):undo_previous(self.service,GROUP,USER,'direct',True)
-        self.assertEqual(self.debt(),905)
+        self.assertEqual(self.debt(),900)
         self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],1)
         self.assertEqual(sql('SELECT count(*) FROM group_credit_cancelled_orders',fetch=True)[0][0],0)
         self.assertEqual(sql('SELECT count(*) FROM group_credit_cancel_requests',fetch=True)[0][0],0)
