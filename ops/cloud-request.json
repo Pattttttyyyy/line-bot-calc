@@ -1,6 +1,6 @@
 {
   "mode": "deploy",
-  "source_sha": "5c1cd9e7b14b66f5600a510291b6a94d1b219a83",
-  "expected_revision": "line-bot-calc-gh-41855215936-1",
-  "request_id": "receipt-layout-20261105"
+  "source_sha": "be80fc2f42cbce90fea10a65a17ab11a8c17d720",
+  "expected_revision": "line-bot-calc-gh-41989761923-1",
+  "request_id": "group-syntax-aliases-20261105"
 }
