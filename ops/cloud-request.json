@@ -1,6 +1,6 @@
 {
   "mode": "deploy",
-  "source_sha": "ca74d36a199eb3805d2e54f639f85b096df59b60",
-  "expected_revision": "line-bot-calc-gh-42003964395-1",
-  "request_id": "my1000-rate-verified-20261105"
+  "source_sha": "80a05d1bc12c06fb44ba3c9ab49670d5a274f446",
+  "expected_revision": "line-bot-calc-gh-42017861319-1",
+  "request_id": "fast-group-delivery-20261105"
 }
