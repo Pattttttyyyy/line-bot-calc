@@ -60,3 +60,9 @@ journal.py提供私有PostgreSQL紀錄、同訊息／QR／供應商訂單去重�
 正式啟用前仍需：將reserved_amount共用額度檢查接入既有拿卡；接上MyCard授權及付款；完成服務單報表與試算表；設定售價／上限與群組。這些尚未完成，不能部署開放扣點。
 
 雲端CI沿用既有查核管道：run_isolated_tests.py通過既有庫存測試後，再執行mycard_draft/run_isolated.py；沒有新增任何付費主機、正式憑證或對MyCard的網路呼叫。
+
+## 查核結果：Actions #28（42061740388）
+
+僅查核模式，未部署。共368項測試通過：154既有離線、30 SDK/部署守衛、124既有隔離PostgreSQL、36扣點流程模擬及24扣點journal隔離PostgreSQL。查核正式服務仍為line-bot-calc-gh-42040087413-1、HTTP200。正式資料庫未建立新表；沒有MyCard登入、OTP、真實扣點或LINE試發。
+
+這表示持久化與記帳元件已在隔離DB驗證，不表示MyCard付款通道已接通，也不表示既有庫存拿卡已接入扣點保留額度。仍禁止啟用付款。
