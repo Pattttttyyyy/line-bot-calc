@@ -870,4 +870,107 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(row,(False,1810,0))
         with self.assertRaises(CreditError):self.service.buy(other,target,'sale',[dict(product_text='test100',quantity=1)])
 
+
+    def sheet_namespace(self):
+        from unittest.mock import MagicMock
+        return {key:MagicMock(return_value=True) for key in
+            ('append_sales_rows','mark_product_sale','mark_sales_rows_undone',
+             'mark_sales_rows_undone_in_sheet','get_sales_sheet')}
+
+    def sync_sales(self,namespace,limit=1):
+        from group_sheet_queue import sync_pending_sales
+        return sync_pending_sales(self.service,namespace,GROUP,limit)
+
+    def sync_state(self):
+        return sql("SELECT reason FROM group_credit_events WHERE kind='sale' ORDER BY created_at",fetch=True)
+
+    def test_sheet_backlog_committed_with_sale_and_drained_once(self):
+        sale=self.buy();ns=self.sheet_namespace()
+        self.assertEqual(self.sync_state(),[('sheet:pending:v1',)])
+        before=sql('SELECT count(*) FROM transactions',fetch=True)
+        self.assertEqual(self.sync_sales(ns),dict(completed=1,failed=False))
+        self.assertEqual(self.sync_state(),[('sheet:done:v1',)])
+        self.assertEqual(self.sync_sales(ns),dict(completed=0,failed=False))
+        ns['append_sales_rows'].assert_called_once()
+        ns['mark_product_sale'].assert_called_once()
+        self.assertEqual(self.debt(),900)
+        self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True),before)
+        self.assertEqual(ns['append_sales_rows'].call_args.args[1][0]['order_no'],sale['items'][0]['order_no'])
+
+    def test_sheet_backlog_rollback_does_not_publish_failed_sale(self):
+        with self.assertRaises(CreditError):self.buy(qty=5)
+        self.assertEqual(self.sync_state(),[])
+        ns=self.sheet_namespace();self.sync_sales(ns)
+        ns['append_sales_rows'].assert_not_called()
+
+    def test_sheet_failure_retries_original_order_without_charging_again(self):
+        self.buy();ns=self.sheet_namespace()
+        ns['mark_product_sale'].return_value=False
+        self.assertEqual(self.sync_sales(ns),dict(completed=0,failed=True))
+        self.assertEqual(self.sync_state(),[('sheet:pending:v1',)])
+        first=ns['append_sales_rows'].call_args
+        ns['mark_product_sale'].return_value=True
+        self.service=GroupCredit(connect,RealDictCursor,product,lambda:'NEVER_ALLOCATE',lambda t:[t])
+        self.assertEqual(self.sync_sales(ns),dict(completed=1,failed=False))
+        self.assertEqual(ns['append_sales_rows'].call_args,first)
+        self.assertEqual(self.debt(),900)
+        self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],1)
+
+    def test_sheet_exception_is_durable(self):
+        self.buy();ns=self.sheet_namespace()
+        ns['append_sales_rows'].side_effect=TimeoutError('fake transport')
+        self.assertEqual(self.sync_sales(ns),dict(completed=0,failed=True))
+        self.assertEqual(self.sync_state(),[('sheet:pending:v1',)])
+        self.assertEqual(self.debt(),900)
+
+    def test_sheet_mirror_cancelled_before_sync_preserves_history(self):
+        sale=self.buy()
+        prompt=self.service.request_cancel(GROUP,USER,'cancel',sale['order_no'],True)
+        self.service.confirm_cancel(GROUP,USER,prompt['token'],True)
+        ns=self.sheet_namespace()
+        self.assertEqual(self.sync_sales(ns),dict(completed=1,failed=False))
+        ns['append_sales_rows'].assert_called_once()
+        ns['mark_product_sale'].assert_not_called()
+        ns['mark_sales_rows_undone'].assert_called_once_with([sale['items'][0]['order_no']])
+        self.assertEqual(self.debt(),0)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='available'",fetch=True)[0][0],4)
+
+    def test_sheet_cancelled_test_sale_only_updates_test_sheet(self):
+        self.service.manage(GROUP,USER,'bind-test','bind','測試',admin=True)
+        sql("INSERT INTO products(code) VALUES ('test100')")
+        sql("INSERT INTO serials(product_id,serial,status) SELECT id,'FakeTestCard','available' FROM products WHERE code='test100'")
+        sale=self.service.buy(GROUP,USER,'test-sale',[dict(product_text='test100',quantity=1)])
+        prompt=self.service.request_cancel(GROUP,USER,'cancel',sale['order_no'],True)
+        self.service.confirm_cancel(GROUP,USER,prompt['token'],True)
+        ns=self.sheet_namespace();self.sync_sales(ns)
+        self.assertEqual(ns['append_sales_rows'].call_args.args[0],'測試')
+        ns['mark_product_sale'].assert_not_called()
+        ns['mark_sales_rows_undone'].assert_not_called()
+        ns['mark_sales_rows_undone_in_sheet'].assert_called_once()
+        self.assertEqual(self.debt(),0)
+
+    def test_concurrent_sheet_workers_serialize_without_duplicate_write(self):
+        self.buy();ns=self.sheet_namespace()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(lambda _:self.sync_sales(ns),range(2)))
+        self.assertEqual(sum(r['completed'] for r in results),1)
+        ns['append_sales_rows'].assert_called_once()
+        self.assertEqual(self.debt(),900)
+
+    def test_sheet_retry_uses_original_taipei_date_after_midnight(self):
+        self.buy();ns=self.sheet_namespace()
+        sql("UPDATE transactions SET created_at='2026-11-03 16:05:00+00'")
+        self.sync_sales(ns)
+        self.assertEqual(ns['append_sales_rows'].call_args.args[1][0]['sale_date'],'2026/11/04')
+
+    def test_sheet_rebinding_does_not_change_original_customer(self):
+        self.buy();self.service.manage(GROUP,USER,'rebind','bind','測試',admin=True)
+        ns=self.sheet_namespace();self.sync_sales(ns)
+        self.assertEqual(ns['append_sales_rows'].call_args.args[0],'軒')
+
+    def test_sheet_historical_orders_not_automatically_backfilled(self):
+        self.buy();sql("UPDATE group_credit_events SET reason='' WHERE kind='sale'")
+        ns=self.sheet_namespace();self.sync_sales(ns)
+        ns['append_sales_rows'].assert_not_called()
+
 if __name__=='__main__':unittest.main(verbosity=2)
