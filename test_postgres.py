@@ -936,7 +936,8 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='available'",fetch=True)[0][0],4)
 
     def test_sheet_cancelled_test_sale_only_updates_test_sheet(self):
-        self.service.manage(GROUP,USER,'bind-test','bind','測試',admin=True)
+        # Isolated fixture starts as a test account; production rebinding remains forbidden.
+        sql("UPDATE group_credit_accounts SET customer='測試' WHERE group_id=%s",(GROUP,))
         sql("INSERT INTO products(code) VALUES ('test100')")
         sql("INSERT INTO serials(product_id,serial,status) SELECT id,'FakeTestCard','available' FROM products WHERE code='test100'")
         sale=self.service.buy(GROUP,USER,'test-sale',[dict(product_text='test100',quantity=1)])
@@ -964,7 +965,9 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(ns['append_sales_rows'].call_args.args[1][0]['sale_date'],'2026/11/04')
 
     def test_sheet_rebinding_does_not_change_original_customer(self):
-        self.buy();self.service.manage(GROUP,USER,'rebind','bind','測試',admin=True)
+        self.buy()
+        with self.assertRaises(CreditError):
+            self.service.manage(GROUP,USER,'rebind','bind','測試',admin=True)
         ns=self.sheet_namespace();self.sync_sales(ns)
         self.assertEqual(ns['append_sales_rows'].call_args.args[0],'軒')
 
