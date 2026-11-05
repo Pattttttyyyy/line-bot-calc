@@ -261,7 +261,7 @@ class GroupCredit:
                 # without a matching credit adjustment. This flow has its own immutable event log.
                 cur.execute('UPDATE group_credit_accounts SET debt=%s,updated_at=now() WHERE group_id=%s', (debt_after,group_id))
                 self._event(cur,group_id,event_id,'sale',total,debt_after,operator,order_no=order_no,
-                            child_orders=[x['order_no'] for x in prepared],delivery='pending')
+                            child_orders=[x['order_no'] for x in prepared],delivery='pending',reason='sheet:pending:v1')
             if owns_connection: conn.commit()
             return {'duplicate':False,'customer':account['customer'],'order_no':order_no,'items':prepared,
                     'serial_chunks':chunks,'amount':total,'debt':debt_after,'credit_limit':money(account['credit_limit'])}
