@@ -20,6 +20,10 @@ def ns():
 
 
 class ReceiptTests(unittest.TestCase):
+    def setUp(self):
+        queue=patch('group_sheet_queue.sync_pending_sales',return_value={'completed':1,'failed':False})
+        self.sync=queue.start();self.addCleanup(queue.stop)
+
     def test_test_receipt_mirrors_separate_sales_but_not_product_stock(self):
         r=result();r['customer']='測試'
         r['items'][0]['product']['code']='test100'
@@ -30,7 +34,8 @@ class ReceiptTests(unittest.TestCase):
         with patch('receipt_cards.reply_receipt') as reply:
             deliver_sale(NS(),namespace,svc,'group:FAKE','FAKE',r)
             self.assertIn('【測試】',reply.call_args.args[2])
-        namespace['append_sales_rows'].assert_called_once_with('測試',r['items'])
+        namespace['append_sales_rows'].assert_not_called()
+        self.sync.assert_called_once_with(svc,namespace,'group:FAKE',limit=1)
         namespace['mark_product_sale'].assert_not_called()
         svc.delivery.assert_called_once_with('group:FAKE','FAKE','delivered')
     def test_amounts_match_committed_sale_and_original_balance(self):
@@ -66,7 +71,7 @@ class ReceiptTests(unittest.TestCase):
         data=result();namespace=ns();service=MagicMock()
         with patch('receipt_cards.reply_receipt') as reply:
             self.assertTrue(deliver_sale(NS(),namespace,service,'group:FAKE','EVENT_FAKE',data))
-        reply.assert_called_once_with(unittest.mock.ANY,data,unittest.mock.ANY,namespace,True,True)
+        reply.assert_called_once_with(unittest.mock.ANY,dict(data,sheet_pending=True),unittest.mock.ANY,namespace)
         service.delivery.assert_called_once_with('group:FAKE','EVENT_FAKE','delivered')
         service.buy.assert_not_called();service.manage.assert_not_called()
     def test_transport_timeout_never_retries_or_refunds(self):
@@ -93,3 +98,44 @@ class ReceiptTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class FastReplyOrderTests(unittest.TestCase):
+    def test_reply_precedes_all_sheet_work_and_queue_failure_never_resends(self):
+        sequence=[];namespace=ns();svc=MagicMock()
+        with patch('receipt_cards.reply_receipt',side_effect=lambda *a:sequence.append('reply')) as send, patch('group_sheet_queue.sync_pending_sales',side_effect=lambda *a,**k:sequence.append('sync')):
+            deliver_sale(NS(),namespace,svc,'group:FAKE','event',result())
+        self.assertEqual(sequence,['reply','sync']);send.assert_called_once()
+        namespace['append_sales_rows'].assert_not_called();namespace['mark_product_sale'].assert_not_called()
+    def test_ambiguous_delivery_still_syncs_committed_order_once(self):
+        svc=MagicMock();namespace=ns()
+        with patch('receipt_cards.reply_receipt',side_effect=TimeoutError) as send,patch('group_sheet_queue.sync_pending_sales') as sync:
+            with self.assertRaises(TimeoutError):deliver_sale(NS(),namespace,svc,'group:FAKE','event',result())
+        send.assert_called_once();sync.assert_called_once()
+        svc.delivery.assert_called_once_with('group:FAKE','event','uncertain');svc.buy.assert_not_called()
+    def test_queue_failure_does_not_change_successful_delivery(self):
+        svc=MagicMock()
+        with patch('receipt_cards.reply_receipt') as send,patch('group_sheet_queue.sync_pending_sales',side_effect=RuntimeError):
+            self.assertTrue(deliver_sale(NS(),ns(),svc,'group:FAKE','event',result()))
+        send.assert_called_once();svc.delivery.assert_called_once_with('group:FAKE','event','delivered')
+    def test_pending_receipt_is_honest(self):
+        data=json.dumps(receipt_bubble(dict(result(),sheet_pending=True)),ensure_ascii=False)
+        self.assertIn('試算表接續同步',data)
+
+class SheetSyncCommandTests(unittest.TestCase):
+    def namespace(self,admin):
+        return dict(get_context_id=lambda e:'group:FAKE',get_db=MagicMock(),RealDictCursor=MagicMock(),
+                    find_product=MagicMock(),create_order_no=MagicMock(),split_text_chunks=MagicMock(),
+                    get_operator=lambda e:'U_FAKE',is_admin=lambda u:admin,reply=MagicMock())
+    def test_nonadmin_cannot_sync(self):
+        namespace=self.namespace(False)
+        with patch('group_sheet_queue.sync_pending_sales') as sync:
+            self.assertTrue(handle_group_credit(NS(message=NS(text='/同步發卡紀錄',id='fake')),namespace))
+        sync.assert_not_called();namespace['get_db'].assert_not_called()
+        self.assertIn('只有管理員',namespace['reply'].call_args.args[1])
+    def test_admin_sync_is_bounded_and_group_scoped(self):
+        namespace=self.namespace(True)
+        with patch('group_sheet_queue.sync_pending_sales',return_value=dict(completed=2,failed=False)) as sync:
+            handle_group_credit(NS(message=NS(text='/同步發卡紀錄',id='fake')),namespace)
+        self.assertEqual(sync.call_args.args[2],'group:FAKE');self.assertEqual(sync.call_args.kwargs,dict(limit=10))
+        self.assertIn('2 筆',namespace['reply'].call_args.args[1])
