@@ -1,6 +1,6 @@
 {
-  "mode": "deploy",
-  "source_sha": "68b79dfe2e6ec538306147966d8159475ea31a76",
-  "expected_revision": "line-bot-calc-gh-42017861319-1",
-  "request_id": "fast-group-delivery-verified-20261105"
+  "mode": "check",
+  "source_sha": "c1df144964b44a09cfbc7bbdd50fc0dbc958f303",
+  "expected_revision": "line-bot-calc-gh-42040087413-1",
+  "request_id": "mycard-cloud-journal-isolated-20261105"
 }
