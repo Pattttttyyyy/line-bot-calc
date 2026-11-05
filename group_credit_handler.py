@@ -72,13 +72,22 @@ def handle_group_credit(event, ns):
         return False
     service = GroupCredit(ns['get_db'],ns['RealDictCursor'],ns['find_product'],
                           ns['create_order_no'],ns['split_text_chunks'])
-    known = command in COMMANDS or command in ('/自助補發','/自助撤回')
+    known = command in COMMANDS or command in ('/自助補發','/自助撤回','/同步發卡紀錄')
     if not known and not service.registered(group_id):
         return False
     operator = ns['get_operator'](event)
     admin = ns['is_admin'](operator)
     event_id = str(getattr(event.message,'id','') or '')
     try:
+        if command=='/同步發卡紀錄':
+            if not admin:
+                raise CreditError('⛔ 只有管理員可以補同步發卡紀錄。')
+            if text!=command:
+                raise CreditError('請直接輸入 /同步發卡紀錄。')
+            from group_sheet_queue import sync_pending_sales
+            outcome=sync_pending_sales(service,ns,group_id,limit=10)
+            ns['reply'](event,f"已補同步 {outcome['completed']} 筆。"+('仍有同步失敗，待同步狀態已保留；不會重複發卡或扣帳。' if outcome['failed'] else '每次最多10筆；可再次執行檢查剩餘。'))
+            return True
         if command in COMMANDS:
             action = COMMANDS[command]
             parts = text.split(maxsplit=2)
@@ -207,27 +216,17 @@ def reply_cancel_result(event,result,ns):
 
 def deliver_sale(event,ns,service,group_id,event_id,result):
     testing = result['customer'] == TEST_CUSTOMER
-    sheet_ok,stock_ok=True,True
-    try:
-        sheet_ok=ns['append_sales_rows'](result['customer'],result['items'])
-    except Exception:
-        sheet_ok=False
-    if not testing:
-        try:
-            stock_ok=ns['mark_product_sale'](result['items'],result['customer'])
-        except Exception:
-            stock_ok=False
+    pending_result=dict(result,sheet_pending=True)
     summary=(f"✅ 出庫並記帳完成\n客戶：{result['customer']}\n訂單：{result['order_no']}\n"
              f"本筆金額：{result['amount']:,.2f}元\n{balance_text(result['debt'])}\n上限：{result['credit_limit']:,.2f}元")
     if testing:
-        summary='【測試】\n'+summary+'\n已記錄測試帳與「測試銷售紀錄」，不計入正式銷售。'
+        summary='【測試】\n'+summary+'\n已記錄測試帳；「測試銷售紀錄」接續同步，不計入正式銷售。'
     if result['debt']>=result['credit_limit']:
         summary+='\n⛔ 已達上限，請管理員登記收款或調帳後再拿卡。'
-    if not sheet_ok or not stock_ok:
-        summary+='\n⚠️ 試算表同步未完整；資料庫訂單及欠款已記錄，勿重複下單。'
+    summary+='\n試算表接續同步；資料庫已記帳，勿重複下單。'
     try:
         from receipt_cards import reply_receipt
-        reply_receipt(event,result,summary,ns,sheet_ok,stock_ok)
+        reply_receipt(event,pending_result,summary,ns)
     except Exception:
         try:
             service.delivery(group_id,event_id,'uncertain')
@@ -241,4 +240,10 @@ def deliver_sale(event,ns,service,group_id,event_id,result):
             service.delivery(group_id,event_id,'delivered')
         except Exception:
             print('GROUP_CREDIT_DELIVERY_STATE_SAVE_FAILED')
+    finally:
+        try:
+            from group_sheet_queue import sync_pending_sales
+            sync_pending_sales(service,ns,group_id,limit=1)
+        except Exception:
+            print('GROUP_SHEET_SYNC_PENDING')
     return True
