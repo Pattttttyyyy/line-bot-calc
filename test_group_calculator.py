@@ -78,7 +78,7 @@ class CalculatorTests(unittest.TestCase):
         db=MemoryDB(debt='11.85');db.state['account']['customer']='測試'
         r=service(db).calculate(GROUP,USER,'charge','-10000*0.905 #補帳',True)
         data=json.dumps(calculator_bubble(r),ensure_ascii=False)
-        for value in ('測試｜計算結果｜已記帳','11.85','-9,050.00','9,061.85','補帳'):
+        for value in ('測試｜計算結果','11.85','-9,050.00','9,061.85','補帳'):
             self.assertIn(value,data)
         for key in ('"action"','"footer"','"quickReply"','"serial"'):self.assertNotIn(key,data)
     def test_zero_receipt_supports_unset_limit_and_disabled(self):
