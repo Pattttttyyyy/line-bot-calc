@@ -37,18 +37,18 @@ def receipt_bubble(result, sheet_ok=True, stock_ok=True):
             text('客戶：' + str(result['customer'])[:80], size='sm', color='#555555'),
             text('\n'.join(product_lines), size='xs', color='#777777'),
             dict(type='separator', margin='md', color='#EEEEEE'),
-            row('原欠款' if previous >= 0 else '原預付款', 'NT$ ' + money_text(abs(previous))),
-            row('本次拿卡', '+ NT$ ' + money_text(amount)),
+            row('上次金額', money_text(-previous) + ' 元'),
+            row('本次金額', '-' + money_text(amount) + ' 元'),
             row('目前欠款', 'NT$ ' + money_text(owed), True),
-            row('預付款餘額', 'NT$ ' + money_text(prepaid), True),
-            row('可拿卡總額', 'NT$ ' + money_text(max(Decimal('0'), limit - debt))),
+            *([row('預付款餘額', 'NT$ ' + money_text(prepaid), True)] if prepaid else []),
             dict(type='separator', margin='md', color='#EEEEEE'),
             text('訂單：' + str(result['order_no'])[:100], size='xxs', color='#999999'),
-            text('已自動記帳，先扣預付款，餘額才列欠款，請勿重複加帳。\n可拿卡總額包含預付款及剩餘賒帳額度；帳況為本筆完成時快照。',
+            text('已自動記帳，先扣預付款，餘額才列欠款，請勿重複加帳。\n帳況為本筆完成時快照。',
                  size='xxs', color='#999999')]
     if testing:
         body.append(text('測試卡原價 NT$ 1,000，售價 NT$ 905。\n同步「測試銷售紀錄」，不計入正式銷售。', size='xxs', color='#999999'))
     if debt >= limit:
+        body.append(row('可拿卡總額', 'NT$ 0.00'))
         body.append(text('已達額度上限，請先聯繫管理員登記收款。', size='xs', color='#D95040'))
     if not sheet_ok or not stock_ok:
         body.append(text('試算表尚未同步完整；出庫與欠款已記錄，勿重複下單或加帳。',
@@ -82,7 +82,7 @@ def reply_receipt(event, result, summary, ns, sheet_ok=True, stock_ok=True):
 def calculator_bubble(result):
     amount = Decimal(str(result['amount']))
     prefix = '測試｜' if result['customer'] == '測試' else ''
-    title = prefix + ('帳況查詢' if amount == 0 else '計算結果｜已記帳')
+    title = prefix + ('帳況查詢' if amount == 0 else '計算結果')
     signed = ('+' if amount >= 0 else '-') + money_text(abs(amount))
 
     def text(value, **options):
@@ -100,18 +100,18 @@ def calculator_bubble(result):
     remaining = ('尚未設定' if limit is None else 'NT$ ' + money_text(
         max(Decimal('0'), Decimal(str(limit)) - Decimal(str(result['debt'])))))
     contents = [text(title, size='lg', weight='bold', color='#23A455'),
-                text('客戶：' + result['customer'], size='sm', color='#777777'),
                 text(result['expression'] + ' = ' + signed, size='sm', align='end', color='#A5754A'),
                 dict(type='separator', margin='md', color='#EEEEEE'),
-                row('上次欠款' if previous >= 0 else '上次預付款', 'NT$ ' + money_text(abs(previous))),
+                row('上次金額', money_text(-previous) + ' 元'),
                 row('本次金額', signed + ' 元'),
                 row('目前欠款', 'NT$ ' + money_text(owed), True),
-                row('預付款餘額', 'NT$ ' + money_text(prepaid), True),
-                row('可拿卡總額', remaining),
+                *([row('預付款餘額', 'NT$ ' + money_text(prepaid), True)] if prepaid else []),
                 dict(type='separator', margin='md', color='#EEEEEE'),
                 text('備註：' + (result['note'] or ('僅查詢，帳款未變更' if amount == 0 else '管理員手動記帳')),
                      size='xs', color='#777777'),
-                text('正數收款：先結欠款，多的存預付款。\n負數及拿卡：先扣預付款，再增加欠款。\n可拿卡總額含預付款及剩餘賒帳額度；拿卡勿再重複加帳。', size='xxs', color='#999999')]
+                text('正數收款，負數加帳；拿卡已自動記帳。', size='xxs', color='#999999')]
+    if amount == 0:
+        contents.append(row('可拿卡總額', remaining))
     if not result['enabled']:
         contents.append(text('自助拿卡目前關閉。', size='xs', color='#D95040'))
     if result.get('record_id'):
