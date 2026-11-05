@@ -20,4 +20,6 @@ try:
     print('ISOLATED_POSTGRES_TEST_EXIT',result.returncode)
 finally:
     subprocess.run([str(pg/'pg_ctl'),'-D',str(data),'-m','fast','-w','stop'],check=True)
+if result.returncode==0:
+    result=subprocess.run([sys.executable,str(root/'mycard_draft/run_isolated.py')],cwd=root)
 sys.exit(result.returncode)
