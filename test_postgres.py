@@ -50,7 +50,8 @@ class PostgreSQLTests(unittest.TestCase):
         sql("UPDATE group_credit_events SET amount=905,debt_after=905 WHERE kind='sale'")
         sql("UPDATE group_credit_accounts SET debt=905 WHERE group_id=%s",(GROUP,))
         replay=self.buy('historical')
-        self.assertTrue(replay['duplicate']);self.assertEqual(replay['amount'],905)
+        self.assertTrue(replay['duplicate']);self.assertEqual(self.debt(),905)
+        self.assertEqual(replay['order_no'],old['order_no'])
         request=self.service.request_cancel(GROUP,USER,'cancel-old',old['order_no'],True)
         refunded=self.service.confirm_cancel(GROUP,USER,request['token'],True)
         self.assertEqual(refunded['amount'],905);self.assertEqual(self.debt(),0)
@@ -579,7 +580,7 @@ class PostgreSQLTests(unittest.TestCase):
         sale=self.buy()
         p=request_reverse(self.service,GROUP,USER,'undo',None,'撤回',True)
         self.assertEqual(p['undo_kind'],'sale');self.assertEqual(p['order_no'],sale['order_no'])
-        self.assertEqual(self.debt(),1005)
+        self.assertEqual(self.debt(),1000)
         self.service.confirm_cancel(GROUP,USER,p['token'],True)
         self.assertEqual(self.debt(),100)
     def test_undo_latest_never_walks_back_after_correction(self):
