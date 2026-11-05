@@ -1,6 +1,6 @@
 {
   "mode": "deploy",
-  "source_sha": "be80fc2f42cbce90fea10a65a17ab11a8c17d720",
-  "expected_revision": "line-bot-calc-gh-41989761923-1",
-  "request_id": "group-syntax-aliases-20261105"
+  "source_sha": "348bc0abfab892f84c43533615df43bb9b7098cf",
+  "expected_revision": "line-bot-calc-gh-42003964395-1",
+  "request_id": "my1000-rate-20261105"
 }
