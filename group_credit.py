@@ -60,7 +60,8 @@ def quote(code, quantity, customer='軒'):
         raise CreditError('這個商品尚未設定自助售價，目前僅開放MY卡。')
     if type(quantity) is not int or not 1 <= quantity <= 500:
         raise CreditError('數量需為1～500的整數。')
-    unit = (Decimal(faces[code]) * RATE).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    rate = Decimal('0.90') if customer == '軒' and code == 'MY1000' else RATE
+    unit = (Decimal(faces[code]) * rate).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
     return unit, money(unit * quantity)
 
 
