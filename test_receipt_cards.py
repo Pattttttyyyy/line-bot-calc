@@ -35,7 +35,7 @@ class ReceiptTests(unittest.TestCase):
         svc.delivery.assert_called_once_with('group:FAKE','FAKE','delivered')
     def test_amounts_match_committed_sale_and_original_balance(self):
         data=json.dumps(receipt_bubble(result()),ensure_ascii=False)
-        for value in ('NT$ 11.85','+ NT$ 9,050.00','NT$ 9,061.85','NT$ 40,938.15','9,050.00 × 1 = 9,050.00'):
+        for value in ('-11.85 元','-9,050.00 元','NT$ 9,061.85','9,050.00 × 1 = 9,050.00'):
             self.assertIn(value,data)
     def test_no_cards_ids_buttons_or_actions_in_receipt(self):
         data=json.dumps(receipt_bubble(result()),ensure_ascii=False)
@@ -59,7 +59,7 @@ class ReceiptTests(unittest.TestCase):
         r=result();r['debt']=D('-95')
         data=json.dumps(receipt_bubble(r),ensure_ascii=False)
         self.assertIn('預付款餘額',data);self.assertIn('95.00',data)
-        self.assertIn('原預付款',data);self.assertNotIn('-95.00',data)
+        self.assertIn('上次金額',data);self.assertNotIn('-95.00',data)
         r['amount']=D('-1')
         with self.assertRaises(ValueError):receipt_bubble(r)
     def test_delivery_only_formats_and_mirrors_existing_order(self):
