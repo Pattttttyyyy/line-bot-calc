@@ -42,6 +42,28 @@ def mentioned_buyer(message, command):
     return user
 
 
+def normalize_group_sale(text):
+    """Normalize only complete product/quantity lines, never IDs or card data."""
+    products = {code.casefold(): code for code in
+                ('MY1000', 'MY3000', 'MY5000', 'MY1萬', 'test100', '1萬')}
+    for canonical, aliases in {
+        'MY1000': ('1000', '1千', '一千'),
+        'MY3000': ('3000', '3千', '三千'),
+        'MY5000': ('5000', '5千', '五千'),
+        'MY1萬': ('10000', '1萬', '一萬', 'MY10000'),
+    }.items():
+        products.update({alias.casefold(): canonical for alias in aliases})
+    lines = []
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        match = re.fullmatch(r'/([^\s*xX]+)(?:\s*[*xX]\s*|\s+)([0-9]+)', raw.strip())
+        if not match or match[1].casefold() not in products:
+            return text
+        lines.append('/' + products[match[1].casefold()] + '*' + match[2])
+    return '\n'.join(lines) if lines else text
+
+
 def handle_group_credit(event, ns):
     group_id = ns['get_context_id'](event)
     text = event.message.text.strip()
@@ -112,9 +134,9 @@ def handle_group_credit(event, ns):
             return True
         # A bound group never falls through into legacy sales, customer aliases,
         # generic undo, balance commands, stock administration or other customers.
-        parsed=ns['parse_quick_sale_message'](text)
+        parsed=ns['parse_quick_sale_message'](normalize_group_sale(text))
         if not parsed or not parsed.get('ok'):
-            raise CreditError('軒群請用 /MY1000*數量、/MY3000*數量、/MY5000*數量、/1萬*數量；測試群請用 /test100*數量。查帳用 /自助帳況。其他出庫、撤回及調帳格式不適用。')
+            raise CreditError('軒群請用 /MY1000*數量、/MY3000*數量、/MY5000*數量、/1萬*數量；測試群請用 /test100*數量。商品英文不分大小寫，數量可用 *、x 或空白分隔。查帳用 /自助帳況，撤回用 /撤回。')
         result=service.buy(group_id,operator,event_id,parsed['items'],admin)
         if result.get('duplicate'):
             ns['reply'](event,f"這則訊息已處理，不會重複出庫或扣帳。\n訂單：{result.get('order_no') or '請管理員查核'}\n如沒收到卡片，請管理員使用 /自助補發 原訂單編號。")
