@@ -106,7 +106,7 @@ def service(db,products=None,chunks=None):
 
 
 class PolicyTests(unittest.TestCase):
-    def test_my1000(self):self.assertEqual(quote('MY1000',1),(D('905'),D('905')))
+    def test_my1000(self):self.assertEqual(quote('MY1000',1),(D('900'),D('900')))
     def test_my3000(self):self.assertEqual(quote('MY3000',1)[0],D('2715'))
     def test_my5000(self):self.assertEqual(quote('MY5000',1)[0],D('4525'))
     def test_my10000(self):self.assertEqual(quote('MY1萬',1)[0],D('9050'))
@@ -130,8 +130,9 @@ class PolicyTests(unittest.TestCase):
 
 
 class TestCustomerTests(unittest.TestCase):
-    def test_price_matches_xuan_my1000(self):
-        self.assertEqual(quote('test100',2,'測試'),quote('MY1000',2))
+    def test_test_price_stays_905_when_xuan_my1000_changes(self):
+        self.assertEqual(quote('test100',2,'測試'),(D('905'),D('1810')))
+        self.assertEqual(quote('MY1000',2),(D('900'),D('1800')))
     def test_production_cannot_buy_test_card(self):
         with self.assertRaises(CreditError):quote('test100',1)
     def test_test_cannot_buy_any_production_card(self):
@@ -159,15 +160,15 @@ class TransactionTests(unittest.TestCase):
         return s.buy(GROUP,user,event,[dict(product_text=code,quantity=qty)])
     def test_success_prices_debt_serial_case(self):
         db=MemoryDB();r=self.buy(service(db),qty=2)
-        self.assertEqual(r['debt'],D('1810'));self.assertEqual(db.state['account']['debt'],D('1810'))
+        self.assertEqual(r['debt'],D('1800'));self.assertEqual(db.state['account']['debt'],D('1800'))
         self.assertEqual(r['items'][0]['serials'][0],'MixedCase_1\npinLower_1')
-        self.assertEqual(db.state['transactions'][0]['sale_amount'],D('1810'))
+        self.assertEqual(db.state['transactions'][0]['sale_amount'],D('1800'))
         self.assertTrue(db.connections[-1].committed)
     def test_duplicate_does_not_charge_or_allocate(self):
         db=MemoryDB();s=service(db);first=self.buy(s);r=self.buy(s)
         self.assertTrue(r['duplicate']);self.assertEqual(r['order_no'],first['order_no'])
         self.assertEqual(db.inventory_reads,1);self.assertEqual(len(db.state['transactions']),1)
-        self.assertEqual(db.state['account']['debt'],D('905'))
+        self.assertEqual(db.state['account']['debt'],D('900'))
     def test_group_member_not_global_member(self):
         db=MemoryDB()
         with self.assertRaises(CreditError):self.buy(service(db),user=OTHER)
@@ -183,7 +184,7 @@ class TransactionTests(unittest.TestCase):
             except CreditError:return None
         with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(run,range(2)))
         self.assertEqual(sum(r is not None for r in results),1)
-        self.assertEqual(db.state['account']['debt'],D('905'))
+        self.assertEqual(db.state['account']['debt'],D('900'))
         self.assertEqual(sum(c['status']=='sold' for c in db.state['cards']),1)
     def test_insufficient_stock_rolls_back(self):
         db=MemoryDB();before=copy.deepcopy(db.state)
@@ -228,14 +229,14 @@ class TransactionTests(unittest.TestCase):
     def test_payment_resumes_after_cap(self):
         db=MemoryDB(limit='905',debt='905');s=service(db)
         s.manage(GROUP,USER,'payment','payment','905','銀行入帳',True)
-        self.assertEqual(self.buy(s)['debt'],D('905'))
+        self.assertEqual(self.buy(s)['debt'],D('900'))
     def test_overpayment_keeps_prepaid_and_sale_consumes_it(self):
         db=MemoryDB(debt='100');s=service(db)
         self.assertEqual(s.manage(GROUP,USER,'m','payment','1100','銀行',True)['debt'],D('-1000'))
-        self.assertEqual(self.buy(s)['debt'],D('-95'))
-        self.assertEqual(self.buy(s,event='second')['debt'],D('810'))
+        self.assertEqual(self.buy(s)['debt'],D('-100'))
+        self.assertEqual(self.buy(s,event='second')['debt'],D('800'))
     def test_prepaid_still_enforces_credit_limit(self):
-        db=MemoryDB(limit='100',debt='-805');s=service(db)
+        db=MemoryDB(limit='100',debt='-800');s=service(db)
         self.assertEqual(self.buy(s)['debt'],D('100'))
         with self.assertRaises(CreditError):self.buy(s,event='over-cap')
         self.assertEqual(db.state['account']['debt'],D('100'))
@@ -264,7 +265,7 @@ class TransactionTests(unittest.TestCase):
     def test_uncertain_delivery_keeps_cards_and_debt(self):
         db=MemoryDB();s=service(db);self.buy(s)
         s.delivery(GROUP,'message-1','uncertain')
-        self.assertEqual(db.state['account']['debt'],D('905'))
+        self.assertEqual(db.state['account']['debt'],D('900'))
         self.assertEqual(sum(c['status']=='sold' for c in db.state['cards']),1)
         self.assertEqual(db.state['events'][(GROUP,'message-1')]['delivery_status'],'uncertain')
     def test_resend_original_without_charge_or_new_cards(self):
@@ -272,7 +273,7 @@ class TransactionTests(unittest.TestCase):
         result=s.resend(GROUP,USER,'resend-1',original['order_no'],admin=True)
         self.assertIn('MixedCase_1',result['serial_chunks'][0])
         self.assertEqual(db.inventory_reads,1)
-        self.assertEqual(db.state['account']['debt'],D('905'))
+        self.assertEqual(db.state['account']['debt'],D('900'))
         self.assertEqual(len(db.state['transactions']),1)
         self.assertTrue(s.resend(GROUP,USER,'resend-1',original['order_no'],admin=True)['duplicate'])
     def test_resend_admin_only(self):
