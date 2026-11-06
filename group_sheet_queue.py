@@ -66,11 +66,11 @@ def sync_pending_sales(service, ns, group, limit=1):
                             (DONE,group,event['event_id'],PENDING))
             conn.commit()
             completed+=1
-        except Exception:
+        except Exception as exc:
             conn.rollback()
             failed=True
             # Never log card data, credentials, or exception text; never retry delivery.
-            print('GROUP_SHEET_SYNC_PENDING')
+            print('GROUP_SHEET_SYNC_PENDING', type(exc).__name__, flush=True)
             break
         finally:
             conn.close()

@@ -84,7 +84,8 @@ class TextCommandTests(unittest.TestCase):
         reply=MagicMock();add=MagicMock()
         ns=dict(os=os,get_operator=lambda e:'FAKE_USER',get_context_id=lambda e:'group:FAKE',
                 is_admin=lambda u:False,reply=reply,add_authorized_user=add,
-                handle_ui_text=lambda e,n:False,handle_group_credit=lambda e,n:False)
+                handle_ui_text=lambda e,n:False,handle_group_credit=lambda e,n:False,
+                try_fast_group_sale=lambda e,n:False)
         exec(compile(ast.Module(body=[fn],type_ignores=[]),'<handler>','exec'),ns)
         with patch.dict(os.environ,{'GROUP_SELF_SERVICE_ENABLED':'1'}):
             ns['handle_message'](self.event('/加權限 FAKE_USER2'))

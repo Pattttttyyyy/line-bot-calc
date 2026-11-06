@@ -976,4 +976,59 @@ class PostgreSQLTests(unittest.TestCase):
         ns=self.sheet_namespace();self.sync_sales(ns)
         ns['append_sales_rows'].assert_not_called()
 
+    def fast_namespace(self):
+        from types import SimpleNamespace as N
+        from unittest.mock import MagicMock
+        return dict(get_context_id=lambda e:GROUP,get_operator=lambda e:USER,is_admin=lambda u:False,
+            get_db=MagicMock(side_effect=connect),RealDictCursor=RealDictCursor,find_product=product,
+            create_order_no=lambda:'TX_FAST_'+uuid.uuid4().hex,split_text_chunks=lambda t:[t],reply=MagicMock(),
+            parse_quick_sale_message=lambda t:dict(ok=True,items=[dict(product_text='MY1000',quantity=1)]))
+
+    def test_fast_route_commits_actual_stock_and_debt_before_line(self):
+        from types import SimpleNamespace as N
+        from unittest.mock import patch
+        from group_credit_handler import try_fast_group_sale
+        ns=self.fast_namespace()
+        def delivered(*args):
+            self.assertEqual(self.debt(),900)
+            self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],1)
+            return True
+        with patch('group_credit_handler.deliver_sale',side_effect=delivered):
+            self.assertTrue(try_fast_group_sale(N(message=N(text='/MY1000*1',id='fast')),ns))
+        ns['get_db'].assert_called_once()
+        self.assertEqual(self.sync_state(),[('sheet:pending:v1',)])
+
+    def test_fast_route_duplicate_issues_one_order_only(self):
+        from types import SimpleNamespace as N
+        from unittest.mock import patch
+        from group_credit_handler import try_fast_group_sale
+        ns=self.fast_namespace();event=N(message=N(text='/MY1000*1',id='fast-duplicate'))
+        with patch('group_credit_handler.deliver_sale',return_value=True) as delivery:
+            try_fast_group_sale(event,ns);try_fast_group_sale(event,ns)
+        delivery.assert_called_once()
+        self.assertEqual(self.debt(),900)
+        self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],1)
+
+    def test_fast_route_unapproved_member_cannot_get_cards(self):
+        from types import SimpleNamespace as N
+        from unittest.mock import patch
+        from group_credit_handler import try_fast_group_sale
+        ns=self.fast_namespace();ns['get_operator']=lambda e:'U'+'f'*32
+        with patch('group_credit_handler.deliver_sale') as delivery:
+            self.assertTrue(try_fast_group_sale(N(message=N(text='/MY1000*1',id='denied-fast')),ns))
+        delivery.assert_not_called();self.assertEqual(self.debt(),0)
+        self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],0)
+
+    def test_fast_route_concurrent_requests_share_the_original_cap_lock(self):
+        from types import SimpleNamespace as N
+        from unittest.mock import patch
+        from group_credit_handler import try_fast_group_sale
+        self.service.manage(GROUP,USER,'fast-cap','limit','900',admin=True)
+        ns=self.fast_namespace()
+        with patch('group_credit_handler.deliver_sale',return_value=True) as delivery:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                list(pool.map(lambda i:try_fast_group_sale(N(message=N(text='/MY1000*1',id='fast-'+str(i))),ns),range(2)))
+        delivery.assert_called_once();self.assertEqual(self.debt(),900)
+        self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],1)
+
 if __name__=='__main__':unittest.main(verbosity=2)
