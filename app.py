@@ -1,6 +1,6 @@
 from bottom_quick import decorate_reply
 from text_commands import handle_ui_text, handle_ui_postback
-from group_credit_handler import handle_group_credit, handle_group_credit_postback
+from group_credit_handler import handle_group_credit, handle_group_credit_postback, try_fast_group_sale
 from sale_detail_helpers import sheet_sale_time, write_appended_sale_serials
 from sales_sheet_retry import append_sales_with_retry
 from stock_in_notes import extract_stock_in_note
@@ -4259,6 +4259,8 @@ def handle_message(event):
         # Optional group credit flow. Default off; a registered group must never
         # fall through to legacy sales or generic undo and bypass its debt limit.
         if os.getenv("GROUP_SELF_SERVICE_ENABLED", "0") == "1":
+            if try_fast_group_sale(event, globals()):
+                return
             if handle_ui_text(event, globals()):
                 return
             if handle_group_credit(event, globals()):

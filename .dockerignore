@@ -12,6 +12,7 @@
 !group_credit.py
 !group_credit_handler.py
 !group_credit_sheet.py
+!group_sheet_queue.py
 !manual_order_fields.py
 !manual_orders.py
 !sale_detail_helpers.py

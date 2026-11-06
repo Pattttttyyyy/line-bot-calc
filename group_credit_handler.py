@@ -1,5 +1,6 @@
 """Optional LINE adapter; dispatch only when the global feature flag is enabled."""
 import re
+from time import perf_counter
 from group_credit import CreditError, GroupCredit, TEST_CUSTOMER, balance_text
 
 COMMANDS = {
@@ -62,6 +63,62 @@ def normalize_group_sale(text):
             return text
         lines.append('/' + products[match[1].casefold()] + '*' + match[2])
     return '\n'.join(lines) if lines else text
+
+
+def try_fast_group_sale(event, ns):
+    """One connection for bound-group lookup and the existing atomic sale.
+
+    No cached permissions or balances. Unknown groups retain the legacy router.
+    Close the transaction before LINE delivery; never fall through after commit.
+    """
+    started = perf_counter()
+    group = ns['get_context_id'](event)
+    if not group.startswith('group:'):
+        return False
+    parsed = ns['parse_quick_sale_message'](normalize_group_sale(event.message.text.strip()))
+    if not parsed or not parsed.get('ok'):
+        return False
+    # Only supported self-service products enter this route. Legacy customer
+    # aliases, stock input, management and accounting keep their original checks.
+    if any(item.get('product_text') not in ('MY1000','MY3000','MY5000','MY1萬','test100','1萬')
+           for item in parsed['items']):
+        return False
+    service = GroupCredit(ns['get_db'],ns['RealDictCursor'],ns['find_product'],
+                          ns['create_order_no'],ns['split_text_chunks'])
+    conn = ns['get_db']()
+    connected = perf_counter()
+    result = None
+    denied = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT 1 FROM group_credit_accounts WHERE group_id=%s', (group,))
+            registered = cur.fetchone() is not None
+        if not registered:
+            conn.rollback()
+            return False
+        operator = ns['get_operator'](event)
+        result = service.buy(group,operator,str(getattr(event.message,'id','') or ''),
+                             parsed['items'],ns['is_admin'](operator),transaction=conn)
+        conn.commit()
+    except CreditError as exc:
+        conn.rollback()
+        denied = str(exc)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    ready = perf_counter()
+    print('GROUP_SALE_DB_MS', 'connect', round((connected-started)*1000),
+          'transaction', round((ready-connected)*1000), flush=True)
+    if denied is not None:
+        ns['reply'](event,denied)
+        return True
+    if result.get('duplicate'):
+        ns['reply'](event,f"這則訊息已處理，不會重複出庫或扣帳。\n訂單：{result.get('order_no') or '請管理員查核'}\n如沒收到卡片，請管理員使用 /自助補發 原訂單編號。")
+        return True
+    request_ns = dict(ns, _sale_started=started)
+    return deliver_sale(event,request_ns,service,group,str(event.message.id),result)
 
 
 def handle_group_credit(event, ns):
@@ -226,7 +283,11 @@ def deliver_sale(event,ns,service,group_id,event_id,result):
     summary+='\n試算表接續同步；資料庫已記帳，勿重複下單。'
     try:
         from receipt_cards import reply_receipt
+        reply_started=perf_counter()
         reply_receipt(event,pending_result,summary,ns)
+        replied=perf_counter()
+        print('GROUP_SALE_REPLY_MS', 'line_api', round((replied-reply_started)*1000),
+              'total', round((replied-ns.get('_sale_started',reply_started))*1000), flush=True)
     except Exception:
         try:
             service.delivery(group_id,event_id,'uncertain')
