@@ -97,16 +97,28 @@ class TestSalesMirrorTests(unittest.TestCase):
     def test_app_routes_test_sales_separately_and_keeps_formal_set(self):
         from types import SimpleNamespace
         tree=ast.parse((Path(__file__).parent/'app.py').read_text())
-        ns=dict(spreadsheet=MagicMock(),gspread=SimpleNamespace(WorksheetNotFound=KeyError),
-                PRODUCT_SHEET_WRITE_LOCK=threading.RLock(),SALES_SHEET_NAME='銷售紀錄',XUAN_SALES_SHEET_NAME='軒銷售紀錄')
-        for name in ('get_sales_sheet','get_sales_sheets'):
+        tabs = {title: MagicMock() for title in ('銷售紀錄', '軒銷售紀錄', '飛銷售紀錄')}
+        book = MagicMock()
+        book.worksheet.side_effect = tabs.__getitem__
+        ns=dict(spreadsheet=book,gspread=SimpleNamespace(WorksheetNotFound=KeyError),
+                PRODUCT_SHEET_WRITE_LOCK=threading.RLock(),SALES_SHEET_NAME='銷售紀錄',
+                XUAN_SALES_SHEET_NAME='軒銷售紀錄',FEI_SALES_SHEET_NAME='飛銷售紀錄')
+        for name in ('sales_sheet_name','get_fei_sales_sheet','get_sales_sheet','get_sales_sheets'):
             fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name)
             exec(compile(ast.Module(body=[fn],type_ignores=[]),'<sales routing>','exec'),ns)
         with patch('group_credit_sheet.get_test_sales_sheet',return_value='TEST_ONLY') as route:
             self.assertEqual(ns['get_sales_sheet']('測試'),'TEST_ONLY')
             route.assert_called_once()
-            route.reset_mock();ns['get_sales_sheets']();route.assert_not_called()
-        self.assertEqual([c.args[0] for c in ns['spreadsheet'].worksheet.call_args_list],['銷售紀錄','軒銷售紀錄'])
+            route.reset_mock()
+            fei = tabs['飛銷售紀錄']
+            fei.acell.return_value.value = '=IFNA(FILTER(A2:L),"")'
+            self.assertIs(ns['get_sales_sheet'](' 飛飛 '), tabs['銷售紀錄'])
+            self.assertEqual(ns['get_sales_sheets'](), [tabs['銷售紀錄'], tabs['軒銷售紀錄']])
+            fei.acell.return_value.value = '2026/11/10'
+            self.assertIs(ns['get_sales_sheet'](' 飛飛 '), fei)
+            self.assertIs(ns['get_sales_sheet']('飛'), fei)
+            self.assertEqual(ns['get_sales_sheets'](), list(tabs.values()))
+            route.assert_not_called()
 
 class MentionBuyerTests(unittest.TestCase):
     def message(self,command='/自助核准',label='@阿 豪😀',**changes):

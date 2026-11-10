@@ -84,6 +84,28 @@ account_sheet = spreadsheet.worksheet(
 
 SALES_SHEET_NAME = "銷售紀錄"
 XUAN_SALES_SHEET_NAME = "軒銷售紀錄"
+FEI_SALES_SHEET_NAME = "飛銷售紀錄"
+
+
+def sales_sheet_name(customer):
+    customer = str(customer or "").strip()
+    if customer == "軒":
+        return XUAN_SALES_SHEET_NAME
+    if customer.startswith("飛"):
+        return FEI_SALES_SHEET_NAME
+    return SALES_SHEET_NAME
+
+
+def get_fei_sales_sheet():
+    """The FILTER view stays read-only until its source rows have been moved."""
+    try:
+        sheet = spreadsheet.worksheet(FEI_SALES_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        return None
+    first_date = sheet.acell("A2", value_render_option="FORMULA").value
+    if isinstance(first_date, str) and first_date.startswith("="):
+        return None
+    return sheet
 
 
 def get_sales_sheet(customer=""):
@@ -94,17 +116,22 @@ def get_sales_sheet(customer=""):
     if str(customer or "").strip() == "測試":
         from group_credit_sheet import get_test_sales_sheet
         return get_test_sales_sheet(spreadsheet,gspread.WorksheetNotFound,PRODUCT_SHEET_WRITE_LOCK)
-    name = XUAN_SALES_SHEET_NAME if str(customer or "").strip() == "軒" else SALES_SHEET_NAME
+    name = sales_sheet_name(customer)
+    if name == FEI_SALES_SHEET_NAME:
+        return get_fei_sales_sheet() or spreadsheet.worksheet(SALES_SHEET_NAME)
     return spreadsheet.worksheet(name)
 
 
 def get_sales_sheets():
-    """舊版可沒有軒專頁；只略過分頁不存在，不略過存取錯誤。"""
+    """Only independent sheets participate in updates and reconciliation."""
     sheets = [get_sales_sheet()]
     try:
         sheets.append(get_sales_sheet("軒"))
     except gspread.WorksheetNotFound:
         pass
+    fei_sheet = get_fei_sales_sheet()
+    if fei_sheet is not None:
+        sheets.append(fei_sheet)
     return sheets
 
 
@@ -1951,18 +1978,26 @@ def sync_sales_sheet_to_supabase(context_id=None, operator=None):
         for key in ("updated", "unchanged", "not_found", "skipped_undone"):
             total[key] += result[key]
         total["invalid"].extend(f"{ws.title}：{message}" for message in result["invalid"])
-    # 人工將客戶改為軒／其他客戶時，也跟著調整所在分頁。
-    if len(sheets) == 2:
-        for ws in sheets:
-            values = ws.get_all_values()
+    # 手動改客戶後，將列移至該客戶的分頁。
+    titles = {ws.title for ws in sheets}
+    for source in sheets:
+        for destination in sheets:
+            if source.id == destination.id:
+                continue
+            values = source.get_all_values()
             if not values:
                 continue
             col = values[0].index("客戶")
-            rows = [i for i, row in enumerate(values[1:], start=2)
-                    if len(row) > col and
-                    ((str(row[col]).strip() == "軒") != (ws.title == XUAN_SALES_SHEET_NAME))]
-            destination = sheets[1] if ws.title == SALES_SHEET_NAME else sheets[0]
-            move_sales_rows(ws, destination, rows)
+            rows = []
+            for row_no, row in enumerate(values[1:], start=2):
+                if len(row) <= col:
+                    continue
+                name = sales_sheet_name(row[col])
+                if name not in titles:
+                    name = SALES_SHEET_NAME
+                if name == destination.title:
+                    rows.append(row_no)
+            move_sales_rows(source, destination, rows)
     return total
 
 
