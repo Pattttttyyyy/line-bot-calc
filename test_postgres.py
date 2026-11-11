@@ -1031,4 +1031,68 @@ class PostgreSQLTests(unittest.TestCase):
         delivery.assert_called_once();self.assertEqual(self.debt(),900)
         self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],1)
 
+class DailyReportPostgreSQLTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sql("""CREATE SCHEMA report_fixture;
+            CREATE TABLE report_fixture.products(id integer PRIMARY KEY,code text,active boolean);
+            CREATE TABLE report_fixture.serials(product_id integer,created_at timestamptz,status text);
+            CREATE TABLE report_fixture.transactions(product_id integer,group_id text,quantity integer,
+                sale_amount numeric,created_at timestamptz,cancelled boolean DEFAULT false);
+            CREATE VIEW report_fixture.active_transactions AS
+                SELECT * FROM report_fixture.transactions WHERE NOT cancelled;
+            CREATE TABLE report_fixture.manual_sales(product_code text,group_id text,quantity integer,
+                sale_amount numeric,sale_date date,state text);""")
+    def setUp(self):
+        sql("""TRUNCATE report_fixture.products,report_fixture.serials,
+                report_fixture.transactions,report_fixture.manual_sales;
+            INSERT INTO report_fixture.products VALUES (1,'MY1000',true),(2,'貝500',true),(3,'test100',true);
+            INSERT INTO report_fixture.transactions VALUES
+                (1,'management',2,1800,'2026-11-11 16:05:00+00',false),
+                (1,'xuan',3,2700,'2026-11-11 17:00:00+00',false),
+                (1,'other-group',1,NULL,'2026-11-11 18:00:00+00',false),
+                (2,'fei',4,1790,'2026-11-11 19:00:00+00',false),
+                (1,'xuan',99,89100,'2026-11-11 17:00:00+00',true),
+                (1,'xuan',99,89100,'2026-11-11 15:59:59+00',false),
+                (1,'xuan',99,89100,'2026-11-12 15:59:00+00',false),
+                (3,'test-group',8,7240,'2026-11-11 19:00:00+00',false);
+            INSERT INTO report_fixture.manual_sales VALUES
+                ('MY1000','another-group',1,900,'2026-11-12','active'),
+                ('service-only','another-group',2,200,'2026-11-12','active'),
+                ('MY1000','another-group',99,89100,'2026-11-12','cancelled');
+            INSERT INTO report_fixture.serials VALUES
+                (1,'2026-11-11 16:00:00+00','available'),
+                (1,'2026-11-11 17:00:00+00','sold'),
+                (2,'2026-11-11 17:00:00+00','available');""")
+    def report(self):
+        from datetime import datetime
+        from unittest.mock import patch
+        from daily_report import read_report,TAIPEI
+        real_connect=psycopg2.connect
+        def isolated_connect(*args,**kwargs):
+            return real_connect(DSN,options='-c search_path=report_fixture')
+        with patch.dict(os.environ,DATABASE_URL='unused-isolated-fixture'),patch(
+                'psycopg2.connect',side_effect=isolated_connect):
+            return read_report(datetime(2026,11,12,23,59,tzinfo=TAIPEI))
+    def test_all_groups_are_included_once_and_cancelled_sales_excluded(self):
+        _,rows=self.report()
+        by_code={r['code']:r for r in rows}
+        self.assertEqual(by_code['MY1000']['outgoing'],7)
+        self.assertEqual(by_code['MY1000']['sales_amount'],Decimal('5400'))
+        self.assertEqual(by_code['MY1000']['unpriced_orders'],1)
+        self.assertEqual(by_code['貝500']['outgoing'],4)
+        self.assertEqual(by_code['service-only']['outgoing'],2)
+        self.assertNotIn('test100',by_code)
+        self.assertEqual(by_code['MY1000']['incoming'],2)
+        self.assertEqual(by_code['MY1000']['available'],1)
+    def test_report_labels_all_groups_and_keeps_unpriced_notice(self):
+        from datetime import datetime
+        from daily_report import format_report,TAIPEI
+        start,rows=self.report()
+        text=format_report(start,rows,datetime(2026,11,12,23,59,tzinfo=TAIPEI))
+        self.assertIn('銷貨：所有群組',text)
+        self.assertIn('NT$ 7,390.00',text)
+        self.assertIn('另 1 筆未填售價',text)
+
+
 if __name__=='__main__':unittest.main(verbosity=2)

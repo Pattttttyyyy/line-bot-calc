@@ -31,6 +31,11 @@ class RequestTests(unittest.TestCase):
     def test_reject_unknown_mode(self):
         with self.assertRaises(ValueError):validate({'mode':'erase','source_sha':SHA},SHA)
     def test_approved_request(self):self.assertEqual(validate({'mode':'deploy','source_sha':SHA,'expected_revision':OLD},SHA)['source_sha'],SHA)
+    def test_report_deploy_requires_job_generation(self):
+        with self.assertRaises(ValueError):
+            validate({'mode':'report-deploy','source_sha':SHA,'expected_revision':OLD},SHA)
+        self.assertEqual(validate({'mode':'report-deploy','source_sha':SHA,
+                                  'expected_revision':'report-generation-3'},SHA)['mode'],'report-deploy')
 
 class ControlTests(unittest.TestCase):
     def setUp(self):self.c=Control('example-project','asia-east1','line-bot-calc','line-bot')
@@ -83,5 +88,50 @@ class ControlTests(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/main'",text)
         import re
         for ref in re.findall(r'uses: (\S+)',text):self.assertRegex(ref,r'@[a-f0-9]{40}$')
+
+
+def report_job(generation=3,image='previous-report-image'):
+    return {'metadata':{'generation':generation},
+            'spec':{'template':{'spec':{'taskCount':1,'template':{'spec':{
+                'serviceAccountName':'runtime@example.invalid',
+                'containers':[{'image':image,'command':['python'],'args':['daily_report.py'],
+                               'env':[{'name':'PRIVATE','value':'FAKE_PRIVATE_VALUE'}]}]}}}}},
+            'status':{'conditions':[{'type':'Ready','status':'True'}]}}
+
+
+class ReportControlTests(unittest.TestCase):
+    def setUp(self):
+        self.c=Control('example-project','asia-east1','line-bot-calc','line-bot')
+    def test_report_summary_hides_credentials_and_recipient(self):
+        with patch.object(self.c,'report_state',return_value=report_job()):
+            result=self.c.report_snapshot()
+        self.assertNotIn('FAKE_PRIVATE_VALUE',json.dumps(result))
+        self.assertNotIn('serviceAccountName',json.dumps(result))
+    def test_changed_report_stops_before_build(self):
+        with patch.object(self.c,'report_state',return_value=report_job()),patch('ops.cloud_control.run') as run:
+            with self.assertRaises(ControlError):
+                self.c.deploy_report(SHA,'report-generation-2')
+        run.assert_not_called()
+    def test_report_deployment_changes_only_image_and_never_executes(self):
+        old=report_job()
+        new=report_job(4,IMAGE)
+        with patch.object(self.c,'report_state',side_effect=[old,old,new]),patch.object(
+                self.c,'g',return_value=cloud_result()),patch('ops.cloud_control.run',return_value='') as run:
+            result=self.c.deploy_report(SHA,'report-generation-3')
+        self.assertTrue(result['ready'])
+        commands=[x.args[0] for x in run.call_args_list]
+        update=next(c for c in commands if c[:4]==['gcloud','run','jobs','update'])
+        self.assertIn('line-bot-daily-report',update)
+        self.assertIn('--image='+IMAGE,update)
+        self.assertFalse(any('execute' in c or '--execute-now' in c or 'services' in c for c in commands))
+    def test_report_environment_change_stops_before_update(self):
+        old=report_job()
+        changed=report_job()
+        changed['spec']['template']['spec']['taskCount']=2
+        with patch.object(self.c,'report_state',side_effect=[old,changed]),patch.object(
+                self.c,'g',return_value=cloud_result()),patch('ops.cloud_control.run',return_value='') as run:
+            with self.assertRaises(ControlError):
+                self.c.deploy_report(SHA,'report-generation-3')
+        self.assertFalse(any(c.args[0][:4]==['gcloud','run','jobs','update'] for c in run.call_args_list))
 
 if __name__=='__main__':unittest.main()
