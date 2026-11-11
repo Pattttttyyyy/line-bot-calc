@@ -103,15 +103,27 @@ class ReportControlTests(unittest.TestCase):
     def setUp(self):
         self.c=Control('example-project','asia-east1','line-bot-calc','line-bot')
     def test_report_summary_hides_credentials_and_recipient(self):
-        with patch.object(self.c,'report_state',return_value=report_job()):
+        with patch.object(self.c,'report_state',return_value=report_job()),patch.object(
+                self.c,'report_can_act_as',return_value=False):
             result=self.c.report_snapshot()
         self.assertNotIn('FAKE_PRIVATE_VALUE',json.dumps(result))
         self.assertNotIn('serviceAccountName',json.dumps(result))
+        self.assertFalse(result['can_act_as_runtime'])
     def test_changed_report_stops_before_build(self):
         with patch.object(self.c,'report_state',return_value=report_job()),patch('ops.cloud_control.run') as run:
             with self.assertRaises(ControlError):
                 self.c.deploy_report(SHA,'report-generation-2')
         run.assert_not_called()
+    def test_runtime_permission_check_reports_absent_permission_without_token(self):
+        import io
+        job=report_job()
+        job['spec']['template']['spec']['template']['spec']['serviceAccountName']='runtime@example-project.iam.gserviceaccount.com'
+        with patch('ops.cloud_control.run',return_value='FAKE_ACCESS_TOKEN'),patch(
+                'ops.cloud_control.urllib.request.urlopen',return_value=io.BytesIO(b'{"permissions":[]}')) as urlopen:
+            self.assertFalse(self.c.report_can_act_as(job))
+        request=urlopen.call_args.args[0]
+        self.assertEqual(json.loads(request.data),{'permissions':['iam.serviceAccounts.actAs']})
+        self.assertTrue(request.full_url.endswith('/runtime@example-project.iam.gserviceaccount.com:testIamPermissions'))
     def test_report_deployment_changes_only_image_and_never_executes(self):
         old=report_job()
         new=report_job(4,IMAGE)

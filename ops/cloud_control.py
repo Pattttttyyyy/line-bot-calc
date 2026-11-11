@@ -8,7 +8,11 @@ def run(args):
     if p.returncode:
         detail=(p.stdout+p.stderr).lower()
         category='permission_denied' if any(x in detail for x in ('permission_denied','permission denied','does not have permission','403','denied:')) else 'not_found' if 'not found' in detail else 'command_failed'
-        raise ControlError(' '.join(args[:3])+': '+category)
+        denied_permissions=[permission for permission in
+                            ('iam.serviceaccounts.actas','run.jobs.update','run.jobs.get')
+                            if permission in detail]
+        raise ControlError(' '.join(args[:3])+': '+category+
+                           (' ('+', '.join(denied_permissions)+')' if denied_permissions else ''))
     return p.stdout
 
 class Control:
@@ -63,7 +67,22 @@ class Control:
         container=job['spec']['template']['spec']['template']['spec']['containers'][0]
         return dict(job='line-bot-daily-report',generation=job['metadata']['generation'],
                     image=container['image'],command=container.get('command',[]),
-                    args=container.get('args',[]))
+                    args=container.get('args',[]),
+                    runtime_service_account=job['spec']['template']['spec']['template']['spec'].get('serviceAccountName',''),
+                    can_act_as_runtime=self.report_can_act_as(job))
+    @staticmethod
+    def report_can_act_as(job):
+        account=job['spec']['template']['spec']['template']['spec'].get('serviceAccountName','')
+        if not re.fullmatch(r'[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.gserviceaccount\.com',account):
+            raise ControlError('Unexpected report service account')
+        token=run(['gcloud','auth','print-access-token']).strip()
+        request=urllib.request.Request(
+            'https://iam.googleapis.com/v1/projects/-/serviceAccounts/'+account+':testIamPermissions',
+            data=json.dumps({'permissions':['iam.serviceAccounts.actAs']}).encode(),
+            headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},
+            method='POST')
+        with urllib.request.urlopen(request,timeout=30) as response:
+            return 'iam.serviceAccounts.actAs' in json.load(response).get('permissions',[])
     def deploy_report(self,sha,expected):
         if not re.fullmatch('[0-9a-f]{40}',sha):raise ControlError('Invalid source SHA')
         if not re.fullmatch('report-generation-[1-9][0-9]*',expected):
