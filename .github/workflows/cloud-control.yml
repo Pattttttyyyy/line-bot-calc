@@ -7,14 +7,14 @@ on:
     inputs:
       mode:
         type: choice
-        options: [check, deploy]
+        options: [check, deploy, report-check, report-deploy]
         default: check
       source_sha:
         type: string
         description: Full approved source commit SHA
       expected_revision:
         type: string
-        description: Current production revision; required for deploy
+        description: Current production revision, or report-generation-N for report-deploy
 permissions:
   contents: read
 concurrency:
@@ -58,7 +58,7 @@ jobs:
   cloud:
     needs: [request, tests]
     runs-on: ubuntu-24.04
-    environment: ${{ needs.request.outputs.mode == 'deploy' && 'production' || 'cloud-readonly' }}
+    environment: ${{ needs.request.outputs.mode != 'check' && 'production' || 'cloud-readonly' }}
     permissions:
       contents: read
       id-token: write

@@ -26,7 +26,7 @@ def reporting_window(now):
     return start, end
 
 
-def read_report(context_id, now):
+def read_report(now):
     import psycopg2
     from psycopg2.extras import RealDictCursor
     start, end = reporting_window(now)
@@ -41,14 +41,14 @@ def read_report(context_id, now):
                         COALESCE(SUM(sale_amount),0) AS sales_amount,
                         COUNT(*) FILTER(WHERE sale_amount IS NULL) AS unpriced_orders
                     FROM manual_sales
-                    WHERE state='active' AND group_id=%s AND sale_date=%s
+                    WHERE state='active' AND sale_date=%s
                     GROUP BY product_code
                 ), sales AS (
                     SELECT product_id, SUM(quantity) AS outgoing,
                         COALESCE(SUM(sale_amount),0) AS sales_amount,
                         COUNT(*) FILTER(WHERE sale_amount IS NULL) AS unpriced_orders
                     FROM active_transactions
-                    WHERE group_id=%s AND created_at >= %s AND created_at < %s
+                    WHERE created_at >= %s AND created_at < %s
                     GROUP BY product_id
                 ), codes AS (
                     SELECT code FROM products WHERE active=TRUE AND code=ANY(%s)
@@ -67,7 +67,7 @@ def read_report(context_id, now):
                 LEFT JOIN manual m ON m.product_code=c.code
                 LEFT JOIN sales t ON t.product_id=p.id
                 ORDER BY LOWER(c.code)
-            ''', (context_id, start.date(), context_id, start, end,
+            ''', (start.date(), start, end,
                   REPORT_PRODUCTS, start, end, REPORT_PRODUCTS))
             return start, cur.fetchall()
     finally:
@@ -77,7 +77,7 @@ def read_report(context_id, now):
 
 def format_report(start, rows, now):
     lines = [f'📊 每日報表｜{start:%Y/%m/%d}',
-             '進貨：全庫存；銷貨：本群組',
+             '進貨：全庫存；銷貨：所有群組',
              f'庫存時間：{now.astimezone(TAIPEI):%Y/%m/%d %H:%M}',
              '', '商品｜進貨／銷貨／可售庫存']
     for row in rows:
@@ -132,7 +132,7 @@ def main():
     if not group_id.startswith('C') or len(group_id) != 33:
         raise ValueError('Invalid LINE group recipient')
     now = datetime.now(TAIPEI)
-    start, rows = read_report('group:'+group_id, now)
+    start, rows = read_report(now)
     report = format_report(start, rows, now)
     if args.preview:
         print(report)

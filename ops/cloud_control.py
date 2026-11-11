@@ -48,6 +48,57 @@ class Control:
         return dict(active_revision=self.active(s),latest_ready_revision=s['status']['latestReadyRevisionName'],
                     image=s['spec']['template']['spec']['containers'][0]['image'],health=self.health(s),
                     cpu=1,memory='512Mi',min_instances=0,max_instances=1)
+    def report_state(self):
+        return self.g('run','jobs','describe','line-bot-daily-report','--region='+self.region)
+    @staticmethod
+    def report_spec_without_image(job):
+        spec=copy.deepcopy(job['spec'])
+        containers=spec['template']['spec']['template']['spec']['containers']
+        if len(containers)!=1:raise ControlError('Unexpected report container count')
+        containers[0].pop('image',None)
+        return spec
+    def report_snapshot(self):
+        job=self.report_state()
+        self.report_spec_without_image(job)
+        container=job['spec']['template']['spec']['template']['spec']['containers'][0]
+        return dict(job='line-bot-daily-report',generation=job['metadata']['generation'],
+                    image=container['image'],command=container.get('command',[]),
+                    args=container.get('args',[]))
+    def deploy_report(self,sha,expected):
+        if not re.fullmatch('[0-9a-f]{40}',sha):raise ControlError('Invalid source SHA')
+        if not re.fullmatch('report-generation-[1-9][0-9]*',expected):
+            raise ControlError('Expected report generation is required')
+        old=self.report_state()
+        if str(old['metadata']['generation'])!=expected.removeprefix('report-generation-'):
+            raise ControlError('Report job changed before deployment')
+        before=self.report_spec_without_image(old)
+        container=old['spec']['template']['spec']['template']['spec']['containers'][0]
+        if container.get('command')!=['python'] or container.get('args')!=['daily_report.py']:
+            raise ControlError('Unexpected report entry point')
+        host=self.region+'-docker.pkg.dev'
+        tag=host+'/'+self.project+'/'+self.repository+'/line-bot:report-git-'+sha
+        run(['gcloud','auth','configure-docker',host,'--quiet'])
+        print('REPORT_PHASE image_build',flush=True)
+        run(['docker','build','--label','org.opencontainers.image.revision='+sha,'--tag',tag,'.'])
+        run(['docker','push',tag])
+        digest=self.g('artifacts','docker','images','describe',tag)['image_summary']['digest']
+        if not re.fullmatch('sha256:[0-9a-f]{64}',digest):raise ControlError('Invalid image digest')
+        image=tag.split(':')[0]+'@'+digest
+        current=self.report_state()
+        if current['metadata']['generation']!=old['metadata']['generation'] or current['spec']!=old['spec']:
+            raise ControlError('Report job changed during build')
+        print('REPORT_PHASE updating_image',flush=True)
+        run(['gcloud','run','jobs','update','line-bot-daily-report','--project='+self.project,
+             '--region='+self.region,'--image='+image,'--quiet'])
+        after=self.report_state()
+        after_container=after['spec']['template']['spec']['template']['spec']['containers'][0]
+        if self.report_spec_without_image(after)!=before or after_container['image']!=image:
+            raise ControlError('Report job verification failed')
+        if not any(c.get('type')=='Ready' and c.get('status')=='True'
+                   for c in after.get('status',{}).get('conditions',[])):
+            raise ControlError('Updated report job is not ready')
+        return dict(job='line-bot-daily-report',generation=after['metadata']['generation'],
+                    image=image,source_sha=sha,ready=True)
     def deploy(self,sha,expected,run_id):
         if not re.fullmatch('[0-9a-f]{40}',sha):raise ControlError('Invalid source SHA')
         if not re.fullmatch('[0-9]+-[0-9]+',run_id):raise ControlError('Invalid run ID')
@@ -101,7 +152,16 @@ def main():
     c=Control(os.environ['GCP_PROJECT'],os.environ.get('GCP_REGION','asia-east1'),
               os.environ.get('RUN_SERVICE','line-bot-calc'),os.environ.get('ARTIFACT_REPOSITORY','line-bot'))
     mode=sys.argv[1]
-    result=c.snapshot() if mode=='check' else c.deploy(os.environ['SOURCE_SHA'],os.environ['EXPECTED_REVISION'],os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']) if mode=='deploy' else None
+    if mode=='check':
+        result=c.snapshot()
+    elif mode=='deploy':
+        result=c.deploy(os.environ['SOURCE_SHA'],os.environ['EXPECTED_REVISION'],os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT'])
+    elif mode=='report-check':
+        result=c.report_snapshot()
+    elif mode=='report-deploy':
+        result=c.deploy_report(os.environ['SOURCE_SHA'],os.environ['EXPECTED_REVISION'])
+    else:
+        result=None
     if result is None:raise ControlError('Unknown mode')
     safe=json.dumps(result,ensure_ascii=False,indent=2)
     print(safe)

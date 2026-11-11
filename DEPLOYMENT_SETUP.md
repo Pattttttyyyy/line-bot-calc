@@ -1,5 +1,13 @@
 # 雲端發佈與部署管道
 
+## 每日報表工作
+
+每日銷售統計包含所有群組的有效正式訂單及有效手填銷售，收件群組只用於 LINE 發送。測試商品沿用獨立測試帳。未填實售價的訂單會列出未填筆數。
+
+每日報表使用獨立的 Cloud Run 工作 `line-bot-daily-report`。工作流程新增 `report-check` 與 `report-deploy`，都使用 production 核准及現有部署身分。`report-check` 只讀取該工作並輸出映像、執行入口及 generation。`report-deploy` 的 expected_revision 必須填入剛查核的 `report-generation-N`，只更新該工作的映像，保留其他工作設定。部署流程不執行工作。工作本身依既有排程發送。
+
+這兩個模式沒有新增 IAM 權限。現有部署身分若無權讀取或更新報表工作，操作會停止並回報 permission_denied，需由有權管理該工作的維護者完成更新或核准適當的資源範圍授權。
+
 2026-11-03已經使用者核准啟用，GitHub-hosted查核與首次部署皆成功。最新操作結果以Actions工作紀錄為準，歷史版本見README。
 
 ## 能做什麼
