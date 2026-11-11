@@ -1,6 +1,6 @@
 {
-  "mode": "check",
-  "source_sha": "214465b421a0f134d6c17031c364c794d582122d",
-  "expected_revision": "line-bot-calc-gh-42239956220-1",
-  "request_id": "post-release-faster-delivery-20261106"
+  "mode": "report-check",
+  "source_sha": "bd218ec064b2f70336f3293d4854ddb4f5741885",
+  "expected_revision": "",
+  "request_id": "report-runtime-permission-20261112"
 }
