@@ -59,13 +59,13 @@ class Control:
         result=dict(active_revision=self.active(s),
                     container_concurrency=s['spec']['template']['spec'].get('containerConcurrency'),
                     request_timeout_seconds=s['spec']['template']['spec'].get('timeoutSeconds'),
-                    window_start='2026-11-17T13:20:00Z',window_end='2026-11-17T14:40:00Z')
+                    window_start='2026-11-17T15:05:00Z',window_end='2026-11-17T15:45:00Z')
         query=('resource.type="cloud_run_revision" AND resource.labels.service_name="line-bot-calc" '
                'AND resource.labels.location="asia-east1" '
-               'AND ((timestamp>="2026-11-17T13:20:00Z" AND timestamp<"2026-11-17T14:40:00Z") '
-               'OR (timestamp>="2026-11-17T06:45:00Z" AND timestamp<"2026-11-17T07:05:00Z"))')
-        result['additional_window_start']='2026-11-17T06:45:00Z'
-        result['additional_window_end']='2026-11-17T07:05:00Z'
+               'AND ((timestamp>="2026-11-17T15:05:00Z" AND timestamp<"2026-11-17T15:45:00Z") '
+               'OR (timestamp>="2026-11-17T13:20:00Z" AND timestamp<"2026-11-17T14:40:00Z"))')
+        result['additional_window_start']='2026-11-17T13:20:00Z'
+        result['additional_window_end']='2026-11-17T14:40:00Z'
         location=os.getenv('GCP_LOG_VIEW_LOCATION') or 'global'
         if not re.fullmatch('[a-z][a-z0-9-]{0,62}',location):
             raise ControlError('Invalid log view location')
@@ -89,6 +89,7 @@ class Control:
                   r'GROUP_SHEET_SYNC_MS [0-9]+ completed [0-9]+ failed (?:True|False)',
                   r'GROUP_SHEET_SYNC_BUSY')
         for entry in entries:
+            previous=len(safe)
             timestamp=entry.get('timestamp','')
             if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z',timestamp):continue
             text=entry.get('textPayload','').strip()
@@ -112,6 +113,16 @@ class Control:
                 safe.append(dict(timestamp=timestamp,kind='instance_start',reason=reason[1] if reason else 'other'))
             elif text.startswith('Default STARTUP TCP probe succeeded'):
                 safe.append(dict(timestamp=timestamp,kind='startup_ready'))
+            elif re.search(r'\[CRITICAL\] WORKER TIMEOUT\b',text):
+                safe.append(dict(timestamp=timestamp,kind='runtime_fault',code='worker_timeout'))
+            elif re.search(r'^(?:[a-zA-Z_][a-zA-Z0-9_]*\.)*(?:OperationalError|InterfaceError|ApiException|ConnectionError|ReadTimeout|TimeoutError|SSLError|TransportError|APIError|RefreshError|RuntimeError):',text):
+                error_type=re.search(r'(OperationalError|InterfaceError|ApiException|ConnectionError|ReadTimeout|TimeoutError|SSLError|TransportError|APIError|RefreshError|RuntimeError):',text)[1]
+                safe.append(dict(timestamp=timestamp,kind='runtime_fault',code=error_type))
+            elif entry.get('severity') in ('ERROR','CRITICAL','ALERT','EMERGENCY'):
+                safe.append(dict(timestamp=timestamp,kind='runtime_fault',code='unclassified'))
+            if len(safe)>previous:
+                revision=entry.get('resource',{}).get('labels',{}).get('revision_name','')
+                if re.fullmatch(r'line-bot-calc-[a-z0-9-]{1,63}',revision):safe[-1]['revision']=revision
         return safe
     def report_state(self):
         return self.g('run','jobs','describe','line-bot-daily-report','--region='+self.region)
