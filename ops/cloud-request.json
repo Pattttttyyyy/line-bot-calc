@@ -1,6 +1,6 @@
 {
-  "mode": "diagnose",
+  "mode": "check",
   "source_sha": "598d3845499ba53e5bdd98cad4eeedd765032c76",
-  "expected_revision": "",
-  "request_id": "scoped-incident-route-timings-20261117"
+  "expected_revision": "line-bot-calc-gh-44051022014-1",
+  "request_id": "scoped-incident-read-complete-20261117"
 }
