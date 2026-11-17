@@ -2,6 +2,10 @@
 
 ## 唯讀延遲診斷
 
+2026-11-17 使用者已核准新增「僅小仙女服務日誌」唯讀存取。一次性設定程式 `ops/grant_service_log_view.py` 由專案管理者在已登入的 Cloud Shell 執行，不由CI自我授權。它讀取 `_Default` sink 找到既有日誌bucket位置，建立或核對 `line_bot_calc_latency` view。filter同時限定來源專案、cloud_run_revision、line-bot-calc及asia-east1；現有view範圍不同時停止，不擴大或覆寫。核對服務範圍後，只在該view資源上授予既有line-bot-ci-deploy `roles/logging.viewAccessor`，保留其他binding，最後唯讀核對filter及binding。沒有專案層Logging Viewer、Secret存取、新bucket或新憑證。
+
+診斷只透過該view查詢，不回退到整個專案。`GCP_LOG_VIEW_LOCATION` 是production environment的非機密位置變數，未填預設global；設定程式回傳其他位置時需填入實際值。自動化測試mock所有Google呼叫，不能更動正式IAM。僅準備好程式或測試成功不代表授權已設定；需管理者執行成功並由雲端診斷讀取驗證。
+
 `diagnose` 只讀取現有服務版本、HTTP併發與逾時設定，以及2026-11-17 18:15～18:35台灣時間的指定服務日誌。使用既有production身分及核准，不新增IAM權限。日誌僅在記憶體擷取，公開摘要白名單限時間、HTTP狀態／秒數、啟動標記及固定格式分段耗時，不輸出訊息、卡密、URL、IP、使用者或群組ID。讀取被拒絕時只回傳permission_denied，不自行擴權；此模式不部署、不呼叫Webhook、不發LINE、不讀Secret或資料庫。
 
 ## 自助拿卡與試算表同步鎖分離（2026-11-17）

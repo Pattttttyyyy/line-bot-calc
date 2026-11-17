@@ -55,6 +55,12 @@ class ControlTests(unittest.TestCase):
         self.assertIn('service_name="line-bot-calc"',g.call_args.args[2])
         self.assertIn('timestamp>="2026-11-17T10:15:00Z"',g.call_args.args[2])
         self.assertIn('--limit=500',g.call_args.args)
+        self.assertIn('--resource-names=projects/example-project/locations/global/buckets/_Default/views/line_bot_calc_latency',g.call_args.args)
+    def test_diagnostics_view_location_cannot_inject_command_or_project(self):
+        with patch.object(self.c,'service_state',return_value=state()),patch.dict(
+                'os.environ',{'GCP_LOG_VIEW_LOCATION':'global/other-project'}),patch.object(self.c,'g') as g:
+            with self.assertRaises(ControlError):self.c.diagnose()
+        g.assert_not_called()
     def test_diagnostics_whitelist_discards_payload_and_identity(self):
         stamp='2026-11-17T10:30:21.123Z'
         entries=[dict(timestamp=stamp,textPayload='FAKE_CARD_AND_SECRET'),
