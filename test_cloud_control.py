@@ -22,6 +22,8 @@ def cloud_result():
 
 class RequestTests(unittest.TestCase):
     def test_default_check(self):self.assertEqual(validate({},SHA)['mode'],'check')
+    def test_diagnose_is_valid_readonly_request(self):
+        self.assertEqual(validate({'mode':'diagnose'},SHA)['mode'],'diagnose')
     def test_deploy_needs_sha(self):
         with self.assertRaises(ValueError):validate({'mode':'deploy','expected_revision':OLD},SHA)
     def test_deploy_needs_previous_revision(self):
@@ -39,6 +41,32 @@ class RequestTests(unittest.TestCase):
 
 class ControlTests(unittest.TestCase):
     def setUp(self):self.c=Control('example-project','asia-east1','line-bot-calc','line-bot')
+    def test_diagnostics_permission_denial_does_not_expose_error_or_change_access(self):
+        with patch.object(self.c,'service_state',return_value=state()),patch.object(
+                self.c,'g',side_effect=ControlError('gcloud logging read: permission_denied')) as g:
+            result=self.c.diagnose()
+        self.assertEqual(result['log_access'],'permission_denied')
+        self.assertEqual(g.call_args.args[:2],('logging','read'))
+        self.assertNotIn('PRIVATE',json.dumps(result))
+    def test_diagnostics_filter_is_fixed_and_never_deploys_or_reads_secrets(self):
+        with patch.object(self.c,'service_state',return_value=state()),patch.object(self.c,'g',return_value=[]) as g:
+            result=self.c.diagnose()
+        self.assertEqual(result['log_access'],'available')
+        self.assertIn('service_name="line-bot-calc"',g.call_args.args[2])
+        self.assertIn('timestamp>="2026-11-17T10:15:00Z"',g.call_args.args[2])
+        self.assertIn('--limit=500',g.call_args.args)
+    def test_diagnostics_whitelist_discards_payload_and_identity(self):
+        stamp='2026-11-17T10:30:21.123Z'
+        entries=[dict(timestamp=stamp,textPayload='FAKE_CARD_AND_SECRET'),
+                 dict(timestamp=stamp,textPayload='GROUP_SALE_EVENT_LAG_MS 123'),
+                 dict(timestamp=stamp,textPayload='GROUP_SALE_EVENT_LAG_MS 123 FAKE_CARD'),
+                 dict(timestamp=stamp,httpRequest=dict(latency='360.123s',status=200,requestUrl='FAKE_PRIVATE_URL',remoteIp='FAKE_PRIVATE_IP')),
+                 dict(timestamp=stamp,textPayload='Starting new instance. Reason: AUTOSCALING - FAKE_PRIVATE_DETAIL'),
+                 dict(timestamp=stamp,textPayload='Default STARTUP TCP probe succeeded FAKE_PRIVATE_DETAIL')]
+        result=self.c.safe_timings(entries)
+        self.assertEqual(len(result),4)
+        self.assertNotIn('FAKE_',json.dumps(result))
+        self.assertEqual(result[1]['seconds'],360.123)
     def test_resource_injection_denied(self):
         with self.assertRaises(ControlError):Control('example;bad','asia-east1','line-bot-calc','line-bot')
     def test_different_region_denied(self):

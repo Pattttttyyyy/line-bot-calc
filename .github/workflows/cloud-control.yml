@@ -7,7 +7,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [check, deploy, report-check, report-deploy]
+        options: [check, deploy, report-check, report-deploy, diagnose]
         default: check
       source_sha:
         type: string
