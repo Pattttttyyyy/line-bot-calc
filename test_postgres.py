@@ -958,6 +958,122 @@ class PostgreSQLTests(unittest.TestCase):
         ns['append_sales_rows'].assert_called_once()
         self.assertEqual(self.debt(),900)
 
+    def test_slow_google_does_not_block_next_sale_and_leader_drains_it(self):
+        from threading import Event
+        self.buy('first');ns=self.sheet_namespace()
+        entered,release=Event(),Event()
+        def google(*args):
+            entered.set()
+            if not release.wait(10):raise TimeoutError('isolated test release')
+            return True
+        ns['append_sales_rows'].side_effect=google
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            mirror=pool.submit(self.sync_sales,ns,10)
+            try:
+                self.assertTrue(entered.wait(5))
+                # Must finish while Google is deliberately STILL blocked.
+                second=pool.submit(self.buy,'second').result(timeout=3)
+                self.assertEqual(second['amount'],900)
+                self.assertEqual(self.debt(),1800)
+            finally:release.set()
+            self.assertEqual(mirror.result(timeout=5),dict(completed=2,failed=False))
+        self.assertEqual(self.sync_state(),[('sheet:done:v1',),('sheet:done:v1',)])
+        self.assertEqual(sql('SELECT count(DISTINCT order_no) FROM transactions',fetch=True)[0][0],2)
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='sold'",fetch=True)[0][0],2)
+
+    def test_busy_mirror_returns_without_waiting_and_preserves_new_pending_sale(self):
+        from threading import Event
+        self.buy('first');ns=self.sheet_namespace();entered,release=Event(),Event()
+        def google(*args):
+            entered.set()
+            if not release.wait(10):raise TimeoutError('isolated test release')
+            return True
+        ns['append_sales_rows'].side_effect=google
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            mirror=pool.submit(self.sync_sales,ns)
+            try:
+                self.assertTrue(entered.wait(5))
+                pool.submit(self.buy,'second').result(timeout=3)
+                busy=pool.submit(self.sync_sales,self.sheet_namespace()).result(timeout=3)
+                self.assertEqual(busy,dict(completed=0,failed=False,busy=True))
+            finally:release.set()
+            self.assertEqual(mirror.result(timeout=5)['completed'],1)
+        self.assertEqual(self.sync_state(),[('sheet:done:v1',),('sheet:pending:v1',)])
+        self.assertEqual(self.sync_sales(self.sheet_namespace())['completed'],1)
+        self.assertEqual(self.debt(),1800)
+
+    def test_slow_mirror_does_not_bypass_debt_limit_or_block_rejection(self):
+        from threading import Event
+        self.buy('first');self.service.manage(GROUP,USER,'cap','limit','900',admin=True)
+        ns=self.sheet_namespace();entered,release=Event(),Event()
+        def google(*args):
+            entered.set()
+            if not release.wait(10):raise TimeoutError('isolated test release')
+            return True
+        ns['append_sales_rows'].side_effect=google
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            mirror=pool.submit(self.sync_sales,ns)
+            try:
+                self.assertTrue(entered.wait(5))
+                with self.assertRaises(CreditError):
+                    pool.submit(self.buy,'over-cap').result(timeout=3)
+            finally:release.set()
+            mirror.result(timeout=5)
+        self.assertEqual(self.debt(),900)
+        self.assertEqual(sql('SELECT count(*) FROM transactions',fetch=True)[0][0],1)
+
+    def test_cancel_waits_for_its_order_mirror_without_refunding_next_sale(self):
+        from threading import Event
+        from unittest.mock import patch
+        first=self.buy('first')
+        prompt=self.service.request_cancel(GROUP,USER,'cancel-first',first['order_no'],True)
+        ns=self.sheet_namespace();entered,release,cancelling=Event(),Event(),Event()
+        original=self.service._confirm_cancel
+        def confirm(*args,**kwargs):
+            cancelling.set()
+            return original(*args,**kwargs)
+        def google(*args):
+            entered.set()
+            if not release.wait(10):raise TimeoutError('isolated test release')
+            return True
+        ns['append_sales_rows'].side_effect=google
+        with ThreadPoolExecutor(max_workers=3) as pool,patch.object(self.service,'_confirm_cancel',side_effect=confirm):
+            mirror=pool.submit(self.sync_sales,ns)
+            try:
+                self.assertTrue(entered.wait(5))
+                second=pool.submit(self.buy,'second').result(timeout=3)
+                cancel=pool.submit(self.service.confirm_cancel,GROUP,USER,prompt['token'],True)
+                self.assertTrue(cancelling.wait(5))
+                self.assertFalse(cancel.done())
+            finally:release.set()
+            self.assertEqual(mirror.result(timeout=5)['completed'],1)
+            self.assertEqual(cancel.result(timeout=5)['amount'],900)
+        self.assertEqual(self.debt(),900)
+        self.assertEqual(sql('SELECT order_no FROM active_transactions',fetch=True),[(second['items'][0]['order_no'],)])
+        self.assertEqual(sql("SELECT count(*) FROM serials WHERE status='available'",fetch=True)[0][0],3)
+
+    def test_order_lock_conflict_preserves_pending_then_rechecks_cancelled_resale(self):
+        first=self.buy('first')
+        prompt=self.service.request_cancel(GROUP,USER,'cancel-first',first['order_no'],True)
+        conn=connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute('SELECT id FROM transactions FOR UPDATE')
+            ns=self.sheet_namespace()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                self.assertEqual(pool.submit(self.sync_sales,ns).result(timeout=3),dict(completed=0,failed=True))
+            ns['append_sales_rows'].assert_not_called()
+            self.assertEqual(self.sync_state(),[('sheet:pending:v1',)])
+        finally:conn.rollback();conn.close()
+        self.service.confirm_cancel(GROUP,USER,prompt['token'],True)
+        second=self.buy('resale')
+        ns=self.sheet_namespace()
+        self.assertEqual(self.sync_sales(ns)['completed'],1)
+        ns['mark_product_sale'].assert_not_called()
+        ns['mark_sales_rows_undone'].assert_called_once_with([first['items'][0]['order_no']])
+        self.assertEqual(self.debt(),900)
+        self.assertEqual(sql('SELECT order_no FROM active_transactions',fetch=True),[(second['items'][0]['order_no'],)])
+
     def test_sheet_retry_uses_original_taipei_date_after_midnight(self):
         self.buy();ns=self.sheet_namespace()
         sql("UPDATE transactions SET created_at='2026-11-03 16:05:00+00'")
