@@ -1,6 +1,6 @@
 {
-  "mode": "diagnose",
+  "mode": "check",
   "source_sha": "636cb78aea2cbcec3390495f9390ca48cb943abf",
   "expected_revision": "",
-  "request_id": "inspect-unanswered-0004-my3000-20261118"
+  "request_id": "check-only-after-0004-cold-start-diagnosis-20261118"
 }
