@@ -1,5 +1,17 @@
 # 雲端發佈與部署管道
 
+## 2026-11-17 延遲事件唯讀查核
+
+管理者已執行 scoped view 設定，Actions #41（44094647559）與 #42（44095802392）實測 log_access=available。#42 通過412項測試，僅讀指定服務兩個固定事件時段共25列，未達500列上限。正式修訂仍為 line-bot-calc-gh-44051022014-1；此次未部署應用或變更計費。
+
+安全摘要顯示：14:54:26 的 /callback 請求 latency=1.687911 秒，14:57:38、14:58:14 的 /callback 亦約1.99秒；發卡分段日誌於14:58:36輸出 connect=9900ms、transaction=3799ms，14:58:45輸出 line_api=6200ms、total=22200ms。既有資料庫唯讀查核該筆訂單 created_at 為14:58:32，故不能把前面的 HTTP 200 或約2秒當作發卡完成秒數。18:24:44及18:29:59兩筆同為 /callback（非健康檢查），latency分別1.765356、1.989511秒；使用者畫面庫存回覆時間為18:30:21及18:30:22。
+
+LINE 官方文件明確指出 webhook 未於2秒內回應會逾時；Google 官方文件指出按請求計費時，請求外CPU會停用或嚴重受限，後續請求可能喚醒原工作。目前 callback 同步處理全部工作，Cloud Run min0/max1、request-based billing。觀察與「LINE連線逾時後尚未完成的處理受CPU限制、後續流量喚醒」一致，但尚無該程序CPU節流或請求關聯追蹤，應標示推論，不能宣稱已證實或修復。禁止僅據HTTP 200宣稱回覆在2秒內完成。
+
+待使用者核准的具體下一步：可先在原1CPU/512Mi、min0/max1維持不變下，試行關閉CPU閒置節流（instance-based billing），並以後續正常指令觀察；會改變計費，尚未執行。若單一實例連續運作30天，按公開單價粗估CPU與RAM約US$49.25（未扣免費額度，不含網路、日誌、映像與其他服務），實際min0用量可能較少；不是帳單上限。此試行不取代長期可靠收件佇列及快速HTTP回應的設計。
+
+參考：https://developers.line.biz/en/docs/messaging-api/check-webhook-error-statistics/ 、https://docs.cloud.google.com/run/docs/tips/general 、https://cloud.google.com/run/pricing 。
+
 ## 唯讀延遲診斷
 
 2026-11-17 使用者已核准新增「僅小仙女服務日誌」唯讀存取。一次性設定程式 `ops/grant_service_log_view.py` 由專案管理者在已登入的 Cloud Shell 執行，不由CI自我授權。它讀取 `_Default` sink 找到既有日誌bucket位置，建立或核對 `line_bot_calc_latency` view。filter同時限定來源專案、cloud_run_revision、line-bot-calc及asia-east1；現有view範圍不同時停止，不擴大或覆寫。核對服務範圍後，只在該view資源上授予既有line-bot-ci-deploy `roles/logging.viewAccessor`，保留其他binding，最後唯讀核對filter及binding。沒有專案層Logging Viewer、Secret存取、新bucket或新憑證。
