@@ -53,10 +53,10 @@ class ControlTests(unittest.TestCase):
             result=self.c.diagnose()
         self.assertEqual(result['log_access'],'available')
         self.assertIn('service_name="line-bot-calc"',g.call_args.args[2])
-        self.assertIn('timestamp>="2026-11-17T13:20:00Z"',g.call_args.args[2])
+        self.assertIn('timestamp>="2026-11-17T15:05:00Z"',g.call_args.args[2])
         self.assertIn('--limit=500',g.call_args.args)
         self.assertIn('--resource-names=projects/example-project/locations/global/buckets/_Default/views/line_bot_calc_latency',g.call_args.args)
-        self.assertIn('timestamp>="2026-11-17T06:45:00Z"',g.call_args.args[2])
+        self.assertIn('timestamp>="2026-11-17T13:20:00Z"',g.call_args.args[2])
     def test_diagnostics_view_location_cannot_inject_command_or_project(self):
         with patch.object(self.c,'service_state',return_value=state()),patch.dict(
                 'os.environ',{'GCP_LOG_VIEW_LOCATION':'global/other-project'}),patch.object(self.c,'g') as g:
@@ -94,6 +94,18 @@ class ControlTests(unittest.TestCase):
             dict(timestamp=stamp,textPayload='BOT_APPLICATION_READY_MS 875 PRIVATE_VALUE')])
         self.assertEqual(len(result),1)
         self.assertEqual(result[0]['timing'],'BOT_APPLICATION_READY_MS 875')
+    def test_incident_errors_export_only_type_and_validated_revision(self):
+        stamp='2026-11-17T15:14:00.123Z'
+        entries=[dict(timestamp=stamp,textPayload='gspread.exceptions.APIError: PRIVATE_RESPONSE',
+            resource=dict(labels=dict(revision_name='line-bot-calc-gh-123-1'))),
+            dict(timestamp=stamp,textPayload='[2026] [1] [CRITICAL] WORKER TIMEOUT (pid: PRIVATE)',
+            resource=dict(labels=dict(revision_name='PRIVATE_VALUE'))),
+            dict(timestamp=stamp,textPayload='PRIVATE_FAILURE',severity='ERROR')]
+        result=self.c.safe_timings(entries)
+        self.assertEqual([r['code'] for r in result],['APIError','worker_timeout','unclassified'])
+        self.assertEqual(result[0]['revision'],'line-bot-calc-gh-123-1')
+        self.assertNotIn('revision',result[1])
+        self.assertNotIn('PRIVATE',json.dumps(result))
     def test_resource_injection_denied(self):
         with self.assertRaises(ControlError):Control('example;bad','asia-east1','line-bot-calc','line-bot')
     def test_different_region_denied(self):
