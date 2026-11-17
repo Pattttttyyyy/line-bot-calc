@@ -53,7 +53,7 @@ class ControlTests(unittest.TestCase):
             result=self.c.diagnose()
         self.assertEqual(result['log_access'],'available')
         self.assertIn('service_name="line-bot-calc"',g.call_args.args[2])
-        self.assertIn('timestamp>="2026-11-17T10:15:00Z"',g.call_args.args[2])
+        self.assertIn('timestamp>="2026-11-17T13:20:00Z"',g.call_args.args[2])
         self.assertIn('--limit=500',g.call_args.args)
         self.assertIn('--resource-names=projects/example-project/locations/global/buckets/_Default/views/line_bot_calc_latency',g.call_args.args)
         self.assertIn('timestamp>="2026-11-17T06:45:00Z"',g.call_args.args[2])
