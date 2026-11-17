@@ -1,6 +1,6 @@
 {
-  "mode": "diagnose",
+  "mode": "check",
   "source_sha": "17e7f52df901edc152309191dfd4704795e5aee7",
   "expected_revision": "line-bot-calc-gh-44099419706-1",
-  "request_id": "verify-startup-order-after-release-20261117"
+  "request_id": "startup-release-verified-check-only-20261117"
 }
