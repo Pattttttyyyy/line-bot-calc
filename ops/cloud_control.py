@@ -59,10 +59,10 @@ class Control:
         result=dict(active_revision=self.active(s),
                     container_concurrency=s['spec']['template']['spec'].get('containerConcurrency'),
                     request_timeout_seconds=s['spec']['template']['spec'].get('timeoutSeconds'),
-                    window_start='2026-11-17T13:20:00Z',window_end='2026-11-17T13:40:00Z')
+                    window_start='2026-11-17T13:20:00Z',window_end='2026-11-17T14:40:00Z')
         query=('resource.type="cloud_run_revision" AND resource.labels.service_name="line-bot-calc" '
                'AND resource.labels.location="asia-east1" '
-               'AND ((timestamp>="2026-11-17T13:20:00Z" AND timestamp<"2026-11-17T13:40:00Z") '
+               'AND ((timestamp>="2026-11-17T13:20:00Z" AND timestamp<"2026-11-17T14:40:00Z") '
                'OR (timestamp>="2026-11-17T06:45:00Z" AND timestamp<"2026-11-17T07:05:00Z"))')
         result['additional_window_start']='2026-11-17T06:45:00Z'
         result['additional_window_end']='2026-11-17T07:05:00Z'
@@ -82,7 +82,8 @@ class Control:
     @staticmethod
     def safe_timings(entries):
         safe=[]
-        patterns=(r'GROUP_SALE_DB_MS connect [0-9]+ transaction [0-9]+',
+        patterns=(r'BOT_APPLICATION_READY_MS [0-9]+',
+                  r'GROUP_SALE_DB_MS connect [0-9]+ transaction [0-9]+',
                   r'GROUP_SALE_REPLY_MS line_api [0-9]+ total [0-9]+',
                   r'GROUP_SALE_EVENT_LAG_MS [0-9]+',
                   r'GROUP_SHEET_SYNC_MS [0-9]+ completed [0-9]+ failed (?:True|False)',
@@ -182,6 +183,9 @@ class Control:
         if not re.fullmatch('[0-9a-f]{40}',sha):raise ControlError('Invalid source SHA')
         if not re.fullmatch('[0-9]+-[0-9]+',run_id):raise ControlError('Invalid run ID')
         old=self.service_state();self.assert_limits(old)
+        container=old['spec']['template']['spec']['containers'][0]
+        if container.get('command') or container.get('args'):
+            raise ControlError('Runtime entrypoint overrides image startup; deployment stopped')
         if self.active(old)!=expected or old['status']['latestReadyRevisionName']!=expected:
             raise ControlError('Production version changed; obtain a new approval')
         self.health(old)

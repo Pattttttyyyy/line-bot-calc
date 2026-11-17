@@ -88,6 +88,12 @@ class ControlTests(unittest.TestCase):
         self.assertNotIn('received_at',result[1])
         self.assertNotIn('FAKE_',json.dumps(result))
         self.assertNotIn('private.invalid',json.dumps(result))
+    def test_startup_marker_is_numeric_only(self):
+        stamp='2026-11-17T13:32:00.123Z'
+        result=self.c.safe_timings([dict(timestamp=stamp,textPayload='BOT_APPLICATION_READY_MS 875'),
+            dict(timestamp=stamp,textPayload='BOT_APPLICATION_READY_MS 875 PRIVATE_VALUE')])
+        self.assertEqual(len(result),1)
+        self.assertEqual(result[0]['timing'],'BOT_APPLICATION_READY_MS 875')
     def test_resource_injection_denied(self):
         with self.assertRaises(ControlError):Control('example;bad','asia-east1','line-bot-calc','line-bot')
     def test_different_region_denied(self):
@@ -105,6 +111,13 @@ class ControlTests(unittest.TestCase):
         with patch.object(self.c,'service_state',return_value=state()),patch('ops.cloud_control.run') as run:
             with self.assertRaises(ControlError):self.c.deploy(SHA,'line-bot-calc-other','123-1')
             run.assert_not_called()
+    def test_entrypoint_override_stops_image_change_before_build(self):
+        s=state()
+        s['spec']['template']['spec']['containers'][0]['args']=['old-startup']
+        with patch.object(self.c,'service_state',return_value=s),patch('ops.cloud_control.run') as run:
+            with self.assertRaisesRegex(ControlError,'entrypoint overrides'):
+                self.c.deploy(SHA,OLD,'123-1')
+        run.assert_not_called()
     def test_image_only_release_and_no_traffic_staging(self):
         states=[state(),state(),state(latest=OLD,created=NEW,image=IMAGE),state(active=NEW,latest=NEW,image=IMAGE)]
         with patch.object(self.c,'service_state',side_effect=states),patch.object(self.c,'health',return_value=200),patch.object(self.c,'g',return_value=cloud_result()),patch('ops.cloud_control.run',return_value='') as run:
