@@ -35,7 +35,7 @@ class ReceiptTests(unittest.TestCase):
             deliver_sale(NS(),namespace,svc,'group:FAKE','FAKE',r)
             self.assertIn('【測試】',reply.call_args.args[2])
         namespace['append_sales_rows'].assert_not_called()
-        self.sync.assert_called_once_with(svc,namespace,'group:FAKE',limit=1)
+        self.sync.assert_called_once_with(svc,namespace,'group:FAKE',limit=10)
         namespace['mark_product_sale'].assert_not_called()
         svc.delivery.assert_called_once_with('group:FAKE','FAKE','delivered')
     def test_amounts_match_committed_sale_and_original_balance(self):
@@ -139,3 +139,10 @@ class SheetSyncCommandTests(unittest.TestCase):
             handle_group_credit(NS(message=NS(text='/同步發卡紀錄',id='fake')),namespace)
         self.assertEqual(sync.call_args.args[2],'group:FAKE');self.assertEqual(sync.call_args.kwargs,dict(limit=10))
         self.assertIn('2 筆',namespace['reply'].call_args.args[1])
+
+    def test_busy_sync_command_reports_pending_without_claiming_completion(self):
+        namespace=self.namespace(True)
+        with patch('group_sheet_queue.sync_pending_sales',return_value=dict(completed=0,failed=False,busy=True)):
+            handle_group_credit(NS(message=NS(text='/同步發卡紀錄',id='fake')),namespace)
+        self.assertIn('已有同步正在處理',namespace['reply'].call_args.args[1])
+        self.assertIn('0 筆',namespace['reply'].call_args.args[1])

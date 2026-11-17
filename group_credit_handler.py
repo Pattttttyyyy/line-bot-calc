@@ -1,6 +1,6 @@
 """Optional LINE adapter; dispatch only when the global feature flag is enabled."""
 import re
-from time import perf_counter
+from time import perf_counter, time_ns
 from group_credit import CreditError, GroupCredit, TEST_CUSTOMER, balance_text
 
 COMMANDS = {
@@ -83,6 +83,10 @@ def try_fast_group_sale(event, ns):
     if any(item.get('product_text') not in ('MY1000','MY3000','MY5000','MY1萬','test100','1萬')
            for item in parsed['items']):
         return False
+    timestamp=getattr(event,'timestamp',None)
+    if type(timestamp) is int and timestamp>0:
+        # Numeric elapsed time only; never log payloads, card data or identities.
+        print('GROUP_SALE_EVENT_LAG_MS',max(0,time_ns()//1000000-timestamp),flush=True)
     service = GroupCredit(ns['get_db'],ns['RealDictCursor'],ns['find_product'],
                           ns['create_order_no'],ns['split_text_chunks'])
     conn = ns['get_db']()
@@ -143,7 +147,10 @@ def handle_group_credit(event, ns):
                 raise CreditError('請直接輸入 /同步發卡紀錄。')
             from group_sheet_queue import sync_pending_sales
             outcome=sync_pending_sales(service,ns,group_id,limit=10)
-            ns['reply'](event,f"已補同步 {outcome['completed']} 筆。"+('仍有同步失敗，待同步狀態已保留；不會重複發卡或扣帳。' if outcome['failed'] else '每次最多10筆；可再次執行檢查剩餘。'))
+            message=('已有同步正在處理，待同步紀錄已保留；不影響拿卡。' if outcome.get('busy') else
+                     ('仍有同步失敗，待同步狀態已保留；不會重複發卡或扣帳。' if outcome['failed'] else
+                      '每次最多10筆；可再次執行檢查剩餘。'))
+            ns['reply'](event,f"已補同步 {outcome['completed']} 筆。"+message)
             return True
         if command in COMMANDS:
             action = COMMANDS[command]
@@ -304,7 +311,9 @@ def deliver_sale(event,ns,service,group_id,event_id,result):
     finally:
         try:
             from group_sheet_queue import sync_pending_sales
-            sync_pending_sales(service,ns,group_id,limit=1)
+            # Drain a small committed backlog, including sales that arrived
+            # while another mirror worker was busy. Still after LINE delivery.
+            sync_pending_sales(service,ns,group_id,limit=10)
         except Exception:
             print('GROUP_SHEET_SYNC_PENDING')
     return True
