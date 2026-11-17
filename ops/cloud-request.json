@@ -1,6 +1,6 @@
 {
-  "mode": "deploy",
-  "source_sha": "1aba9e0369fce81ad19f9e43cf86e45b2a3c5483",
-  "expected_revision": "line-bot-calc-gh-42841734138-1",
-  "request_id": "nonblocking-sheet-deploy-20261117"
+  "mode": "check",
+  "source_sha": "de8134db72ce149bdfa5c97d5d679fa8e03e199d",
+  "expected_revision": "line-bot-calc-gh-44051022014-1",
+  "request_id": "nonblocking-sheet-post-release-20261117"
 }
