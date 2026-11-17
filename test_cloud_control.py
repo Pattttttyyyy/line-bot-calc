@@ -220,4 +220,46 @@ class ReportControlTests(unittest.TestCase):
                 self.c.deploy_report(SHA,'report-generation-3')
         self.assertFalse(any(c.args[0][:4]==['gcloud','run','jobs','update'] for c in run.call_args_list))
 
+
+
+class KeepWarmTests(unittest.TestCase):
+    def setUp(self):
+        self.c=Control('example-project','asia-east1','line-bot-calc','line-bot')
+        self.old=state()
+        self.new=copy.deepcopy(self.old)
+        self.new['metadata']={'annotations':{'run.googleapis.com/minScale':'1'}}
+    def test_warm_requires_explicit_source_and_revision(self):
+        for data in ({'mode':'keep-warm'}, {'mode':'keep-warm','source_sha':SHA}):
+            with self.assertRaises(ValueError):validate(data,SHA)
+        self.assertEqual(validate({'mode':'keep-warm','source_sha':SHA,'expected_revision':OLD},SHA)['mode'],'keep-warm')
+    def test_only_service_minimum_is_updated(self):
+        with patch.object(self.c,'service_state',side_effect=[self.old,self.new]),patch.object(self.c,'health',return_value=200),patch('ops.cloud_control.run') as run:
+            result=self.c.keep_warm(OLD)
+        self.assertEqual(run.call_args.args[0],['gcloud','run','services','update','line-bot-calc','--project=example-project','--region=asia-east1','--min=1','--quiet'])
+        self.assertEqual(result['min_instances'],1)
+        self.assertTrue(result['image_unchanged'])
+        self.assertEqual(result['billing'],'request-based')
+    def test_stale_revision_never_mutates(self):
+        with patch.object(self.c,'service_state',return_value=self.old),patch('ops.cloud_control.run') as run:
+            with self.assertRaises(ControlError):self.c.keep_warm(NEW)
+        run.assert_not_called()
+    def test_already_warm_is_idempotent(self):
+        with patch.object(self.c,'service_state',return_value=self.new),patch.object(self.c,'health',return_value=200),patch('ops.cloud_control.run') as run:
+            self.assertEqual(self.c.keep_warm(OLD)['previous_min_instances'],1)
+        run.assert_not_called()
+    def test_configuration_and_traffic_changes_are_rejected(self):
+        for mutate in (lambda s:s['spec']['template']['spec']['containers'][0].update(image='other'),
+                       lambda s:s['spec']['template']['metadata']['annotations'].update({'run.googleapis.com/cpu-throttling':'false'}),
+                       lambda s:s['status']['traffic'][0].update(revisionName=NEW),
+                       lambda s:s['metadata']['annotations'].update({'run.googleapis.com/minScale':'0'})):
+            changed=copy.deepcopy(self.new);mutate(changed)
+            with self.subTest(change=changed),patch.object(self.c,'service_state',side_effect=[self.old,changed]),patch.object(self.c,'health',return_value=200),patch('ops.cloud_control.run'):
+                with self.assertRaises(ControlError):self.c.keep_warm(OLD)
+    def test_limits_reject_unapproved_service_minimum(self):
+        self.new['metadata']['annotations']['run.googleapis.com/minScale']='2'
+        with self.assertRaises(ControlError):self.c.assert_limits(self.new)
+    def test_snapshot_reports_real_service_minimum(self):
+        with patch.object(self.c,'service_state',return_value=self.new),patch.object(self.c,'health',return_value=200):
+            self.assertEqual(self.c.snapshot()['min_instances'],1)
+
 if __name__=='__main__':unittest.main()
