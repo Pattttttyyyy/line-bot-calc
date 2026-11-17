@@ -63,8 +63,13 @@ class Control:
         query=('resource.type="cloud_run_revision" AND resource.labels.service_name="line-bot-calc" '
                'AND resource.labels.location="asia-east1" '
                'AND timestamp>="2026-11-17T10:15:00Z" AND timestamp<"2026-11-17T10:35:00Z"')
+        location=os.getenv('GCP_LOG_VIEW_LOCATION') or 'global'
+        if not re.fullmatch('[a-z][a-z0-9-]{0,62}',location):
+            raise ControlError('Invalid log view location')
+        view='projects/'+self.project+'/locations/'+location+'/buckets/_Default/views/line_bot_calc_latency'
+        result['log_view']=view
         try:
-            entries=self.g('logging','read',query,'--limit=500','--order=asc')
+            entries=self.g('logging','read',query,'--resource-names='+view,'--limit=500','--order=asc')
         except ControlError as exc:
             result['log_access']='permission_denied' if 'permission_denied' in str(exc) else 'unavailable'
             return result

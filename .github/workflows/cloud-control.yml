@@ -52,7 +52,7 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install -r requirements.txt
       - run: python -X utf8 run_offline_tests.py
-      - run: python -X utf8 -m unittest -q test_line_buttons.py test_cloud_control.py
+      - run: python -X utf8 -m unittest -q test_line_buttons.py test_cloud_control.py test_log_view_access.py
       - run: sudo apt-get update -qq && sudo apt-get install -y postgresql-16
       - run: python -X utf8 run_isolated_tests.py
   cloud:
@@ -78,4 +78,5 @@ jobs:
           SOURCE_SHA: ${{ needs.request.outputs.source_sha }}
           EXPECTED_REVISION: ${{ needs.request.outputs.expected_revision }}
           CLOUD_MODE: ${{ needs.request.outputs.mode }}
+          GCP_LOG_VIEW_LOCATION: ${{ vars.GCP_LOG_VIEW_LOCATION }}
         run: python3 ops/cloud_control.py "$CLOUD_MODE"
