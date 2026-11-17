@@ -1,6 +1,6 @@
 {
-  "mode": "diagnose",
+  "mode": "check",
   "source_sha": "636cb78aea2cbcec3390495f9390ca48cb943abf",
   "expected_revision": "",
-  "request_id": "verify-deferred-startup-and-late-orders-20261117"
+  "request_id": "check-only-after-deferred-startup-verification-20261117"
 }
