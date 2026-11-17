@@ -8,6 +8,8 @@
 
 新增 `GROUP_SALE_EVENT_LAG_MS` 與 `GROUP_SHEET_SYNC_MS`／`GROUP_SHEET_SYNC_BUSY`，只記錄耗時與筆數，不記錄卡密、訊息、群組或使用者ID。隔離 PostgreSQL 測試涵蓋 Google 停滯時下一筆仍能完成、額度拒絕、忙碌保留待補、撤回與重售一致性。正式部署狀態以 Actions 的版本及健康查核為準。
 
+Actions #37（44051022014）通過397項測試（166離線、36 SDK／部署、135隔離PostgreSQL、36停用扣點草稿模擬及24隔離journal）。來源 `1aba9e0369fce81ad19f9e43cf86e45b2a3c5483`；正式修訂 `line-bot-calc-gh-44051022014-1`，100%流量、HTTP200，映像 digest `sha256:4288fbabb681dbd484baadd40f930518c044a3aa93dd58706212f78cde08ab9b`。512Mi／1CPU／min0／max1及原按請求計費保留。沒有結構遷移、正式發卡／撤回／調帳、LINE試發、排程／每日報表映像或Render變更。未取得正式發卡新秒數，不把隔離測試時間當實際使用速度。
+
 ## 每日報表工作
 
 每日銷售統計包含所有群組的有效正式訂單及有效手填銷售，收件群組只用於 LINE 發送。測試商品沿用獨立測試帳。未填實售價的訂單會列出未填筆數。
