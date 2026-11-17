@@ -13,6 +13,7 @@ import uuid
 import threading
 from manual_orders import import_manual_orders
 from stock_batch_numbers import allocate_stock_batch_no
+from lazy_resource import LazyResource
 
 PRODUCT_SHEET_WRITE_LOCK = threading.RLock()
 from datetime import datetime
@@ -77,13 +78,10 @@ credentials = Credentials.from_service_account_file(
 
 gc = gspread.authorize(credentials)
 
-spreadsheet = gc.open_by_key(
-    GOOGLE_SHEET_ID
-)
-
-account_sheet = spreadsheet.worksheet(
-    "帳務表"
-)
+# Opening a workbook fetches Google metadata. Self-service sales and inventory
+# use PostgreSQL first and must not wait for Google during cold startup.
+spreadsheet = LazyResource(lambda: gc.open_by_key(GOOGLE_SHEET_ID))
+account_sheet = LazyResource(lambda: spreadsheet.worksheet("帳務表"))
 
 SALES_SHEET_NAME = "銷售紀錄"
 XUAN_SALES_SHEET_NAME = "軒銷售紀錄"

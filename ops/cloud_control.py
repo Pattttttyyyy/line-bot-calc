@@ -59,10 +59,10 @@ class Control:
         result=dict(active_revision=self.active(s),
                     container_concurrency=s['spec']['template']['spec'].get('containerConcurrency'),
                     request_timeout_seconds=s['spec']['template']['spec'].get('timeoutSeconds'),
-                    window_start='2026-11-17T15:05:00Z',window_end='2026-11-17T15:45:00Z')
+                    window_start='2026-11-17T15:05:00Z',window_end='2026-11-17T16:20:00Z')
         query=('resource.type="cloud_run_revision" AND resource.labels.service_name="line-bot-calc" '
                'AND resource.labels.location="asia-east1" '
-               'AND ((timestamp>="2026-11-17T15:05:00Z" AND timestamp<"2026-11-17T15:45:00Z") '
+               'AND ((timestamp>="2026-11-17T15:05:00Z" AND timestamp<"2026-11-17T16:20:00Z") '
                'OR (timestamp>="2026-11-17T13:20:00Z" AND timestamp<"2026-11-17T14:40:00Z"))')
         result['additional_window_start']='2026-11-17T13:20:00Z'
         result['additional_window_end']='2026-11-17T14:40:00Z'
