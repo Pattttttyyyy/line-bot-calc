@@ -56,6 +56,7 @@ class ControlTests(unittest.TestCase):
         self.assertIn('timestamp>="2026-11-17T10:15:00Z"',g.call_args.args[2])
         self.assertIn('--limit=500',g.call_args.args)
         self.assertIn('--resource-names=projects/example-project/locations/global/buckets/_Default/views/line_bot_calc_latency',g.call_args.args)
+        self.assertIn('timestamp>="2026-11-17T06:45:00Z"',g.call_args.args[2])
     def test_diagnostics_view_location_cannot_inject_command_or_project(self):
         with patch.object(self.c,'service_state',return_value=state()),patch.dict(
                 'os.environ',{'GCP_LOG_VIEW_LOCATION':'global/other-project'}),patch.object(self.c,'g') as g:
@@ -73,6 +74,20 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(len(result),4)
         self.assertNotIn('FAKE_',json.dumps(result))
         self.assertEqual(result[1]['seconds'],360.123)
+    def test_request_classification_keeps_only_known_routes_and_valid_receive_time(self):
+        stamp='2026-11-17T10:24:44.998Z'
+        entries=[dict(timestamp=stamp,receiveTimestamp='2026-11-17T10:24:46.800Z',httpRequest=dict(
+            latency='1.8s',status=200,requestUrl='https://private.invalid/callback?secret=FAKE_SECRET')),
+            dict(timestamp=stamp,receiveTimestamp='FAKE_SECRET',httpRequest=dict(
+            latency='0.1s',status=200,requestUrl='https://private.invalid/')),
+            dict(timestamp=stamp,httpRequest=dict(latency='0.1s',status=404,
+            requestUrl='https://private.invalid/FAKE_CARD'))]
+        result=self.c.safe_timings(entries)
+        self.assertEqual([r['route'] for r in result],['callback','health','other'])
+        self.assertEqual(result[0]['received_at'],'2026-11-17T10:24:46.800Z')
+        self.assertNotIn('received_at',result[1])
+        self.assertNotIn('FAKE_',json.dumps(result))
+        self.assertNotIn('private.invalid',json.dumps(result))
     def test_resource_injection_denied(self):
         with self.assertRaises(ControlError):Control('example;bad','asia-east1','line-bot-calc','line-bot')
     def test_different_region_denied(self):

@@ -1,5 +1,5 @@
 """Image-only cloud release. No Secret reads, DB queries, migrations or LINE calls."""
-import copy,json,os,re,subprocess,sys,urllib.request
+import copy,json,os,re,subprocess,sys,urllib.request,urllib.parse
 
 class ControlError(RuntimeError):pass
 
@@ -62,7 +62,10 @@ class Control:
                     window_start='2026-11-17T10:15:00Z',window_end='2026-11-17T10:35:00Z')
         query=('resource.type="cloud_run_revision" AND resource.labels.service_name="line-bot-calc" '
                'AND resource.labels.location="asia-east1" '
-               'AND timestamp>="2026-11-17T10:15:00Z" AND timestamp<"2026-11-17T10:35:00Z"')
+               'AND ((timestamp>="2026-11-17T10:15:00Z" AND timestamp<"2026-11-17T10:35:00Z") '
+               'OR (timestamp>="2026-11-17T06:45:00Z" AND timestamp<"2026-11-17T07:05:00Z"))')
+        result['additional_window_start']='2026-11-17T06:45:00Z'
+        result['additional_window_end']='2026-11-17T07:05:00Z'
         location=os.getenv('GCP_LOG_VIEW_LOCATION') or 'global'
         if not re.fullmatch('[a-z][a-z0-9-]{0,62}',location):
             raise ControlError('Invalid log view location')
@@ -73,7 +76,7 @@ class Control:
         except ControlError as exc:
             result['log_access']='permission_denied' if 'permission_denied' in str(exc) else 'unavailable'
             return result
-        result.update(log_access='available',may_be_truncated=len(entries)==500,
+        result.update(log_access='available',entry_count=len(entries),may_be_truncated=len(entries)==500,
                       timings=self.safe_timings(entries))
         return result
     @staticmethod
@@ -92,7 +95,15 @@ class Control:
             latency=http.get('latency','')
             status=http.get('status')
             if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?s',latency) and type(status) is int:
-                safe.append(dict(timestamp=timestamp,kind='http',seconds=float(latency[:-1]),status=status))
+                # Classify only known application routes. Never export URLs,
+                # query strings, headers, IPs or arbitrary request paths.
+                try:path=urllib.parse.urlsplit(http.get('requestUrl','')).path
+                except ValueError:path=''
+                route='callback' if path=='/callback' else 'health' if path=='/' else 'other'
+                record=dict(timestamp=timestamp,kind='http',seconds=float(latency[:-1]),status=status,route=route)
+                received=entry.get('receiveTimestamp','')
+                if re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z',received):record['received_at']=received
+                safe.append(record)
             elif any(re.fullmatch(pattern,text) for pattern in patterns):
                 safe.append(dict(timestamp=timestamp,kind='app_timing',timing=text))
             elif text.startswith('Starting new instance. Reason:'):
