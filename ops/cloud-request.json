@@ -1,6 +1,6 @@
 {
-  "mode": "check",
+  "mode": "diagnose",
   "source_sha": "0c1a608aa5fcd60d2ae3f33e9fee7ec89d06e4aa",
-  "expected_revision": "line-bot-calc-gh-44051022014-1",
-  "request_id": "scoped-log-access-prepared-20261117"
+  "expected_revision": "",
+  "request_id": "scoped-latency-incident-20261117"
 }
