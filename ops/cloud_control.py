@@ -33,6 +33,8 @@ class Control:
     def assert_limits(s):
         t=s['spec']['template'];a=t['metadata'].get('annotations',{})
         if t['spec']['containers'][0]['resources']['limits']!={'cpu':'1','memory':'512Mi'}:raise ControlError('Resource limits changed')
+        service_min=s.get('metadata',{}).get('annotations',{}).get('run.googleapis.com/minScale','0')
+        if service_min not in ('0','1'):raise ControlError('Service minimum exceeds approved limit')
         if a.get('autoscaling.knative.dev/minScale','0')!='0' or a.get('autoscaling.knative.dev/maxScale')!='1':raise ControlError('Scaling limits changed')
         if a.get('run.googleapis.com/cpu-throttling','true')!='true':raise ControlError('Billing mode changed')
         if a.get('run.googleapis.com/startup-cpu-boost','false')!='false':raise ControlError('Startup CPU boost changed')
@@ -51,7 +53,29 @@ class Control:
         s=self.service_state();self.assert_limits(s)
         return dict(active_revision=self.active(s),latest_ready_revision=s['status']['latestReadyRevisionName'],
                     image=s['spec']['template']['spec']['containers'][0]['image'],health=self.health(s),
-                    cpu=1,memory='512Mi',min_instances=0,max_instances=1)
+                    cpu=1,memory='512Mi',min_instances=int(s.get('metadata',{}).get('annotations',{}).get('run.googleapis.com/minScale','0')),max_instances=1)
+    def keep_warm(self,expected):
+        """User-approved service minimum only; no image/revision/traffic change."""
+        if not re.fullmatch('line-bot-calc-[a-z0-9-]{1,49}',expected):
+            raise ControlError('Expected current revision is required')
+        old=self.service_state();self.assert_limits(old)
+        if self.active(old)!=expected or old['status']['latestReadyRevisionName']!=expected:
+            raise ControlError('Production version changed; warm setting stopped')
+        before=copy.deepcopy(old['spec'])
+        self.health(old)
+        previous=old.get('metadata',{}).get('annotations',{}).get('run.googleapis.com/minScale','0')
+        if previous!='1':
+            run(['gcloud','run','services','update',self.service,'--project='+self.project,
+                 '--region='+self.region,'--min=1','--quiet'])
+        after=self.service_state();self.assert_limits(after)
+        minimum=after.get('metadata',{}).get('annotations',{}).get('run.googleapis.com/minScale','0')
+        if minimum!='1' or after['spec']!=before or self.active(after)!=expected or after['status']['latestReadyRevisionName']!=expected:
+            raise ControlError('Warm setting verification failed')
+        self.health(after)
+        return dict(active_revision=expected,min_instances=1,max_instances=1,cpu=1,memory='512Mi',
+                    billing='request-based',health=200,image_unchanged=True,traffic_unchanged=True,
+                    previous_min_instances=int(previous))
+
     def diagnose(self):
         # A fixed incident window/target, never a caller-supplied filter/command.
         # Raw stdout/stderr is captured only in memory, never printed/artifacted.
@@ -248,6 +272,8 @@ def main():
     mode=sys.argv[1]
     if mode=='check':
         result=c.snapshot()
+    elif mode=='keep-warm':
+        result=c.keep_warm(os.environ['EXPECTED_REVISION'])
     elif mode=='diagnose':
         result=c.diagnose()
     elif mode=='deploy':
