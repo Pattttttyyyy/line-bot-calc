@@ -1,3 +1,6 @@
+from time import perf_counter
+_application_boot_started = perf_counter()
+
 from bottom_quick import decorate_reply
 from text_commands import handle_ui_text, handle_ui_postback
 from group_credit_handler import handle_group_credit, handle_group_credit_postback, try_fast_group_sale
@@ -5983,3 +5986,8 @@ def handle_group_credit_button(event):
     except Exception as exc:
         print("GROUP_CREDIT_POSTBACK_ERROR", type(exc).__name__)
         reply(event, "⚠️ 處理未完成，請先查核訂單與群組欠款；勿另外重複減帳。")
+
+
+# With gunicorn --preload this completes before its listening socket opens.
+# Numeric duration only: no configuration, credentials or business data.
+print('BOT_APPLICATION_READY_MS', round((perf_counter()-_application_boot_started)*1000), flush=True)

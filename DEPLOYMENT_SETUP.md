@@ -1,5 +1,15 @@
 # 雲端發佈與部署管道
 
+## 啟動完成後才監聽連線（2026-11-17）
+
+21:26的拿卡事件於21:31:58才進入拿卡路徑，`GROUP_SALE_EVENT_LAG_MS=320470`；資料庫段connect=8700ms、transaction=4533ms，LINE段20898ms、total=35700ms，送出後試算表段34364ms。該訂單資料庫建立時間為21:32:05，因此主要約五分鐘等待在拿卡處理之前，無法用送出後同步解釋。同期21:26:38新實例啟動，21:26:39 TCP啟動探測已通過。此證據定位接單前等待，但沒有單獨量測CPU節流或Google初始化各段，不宣稱每一秒原因已證實。
+
+原Docker CMD未preload；Gunicorn可在應用載入前先監聽，預設TCP探測因而過早通過。現在加`--preload`，應用與既有初始化完成後才監聽。仍單worker、8threads、timeout0；原1CPU/512Mi、min0/max1、按請求計費與同步鎖分離保留。新增僅含數字的`BOT_APPLICATION_READY_MS`供後續日誌查核。部署預檢遇command/args覆寫則停止，避免映像CMD修正未生效卻回報成功。
+
+本機真實Gunicorn搭配假WSGI應用的三個測試：舊啟動方式可重現初始化阻塞時TCP已開啟；新方式在初始化完成前不監聽、完成後第一筆HTTP正常；初始化失敗時不開啟連線。測試不import正式app、不連正式Google/LINE/DB。正式啟動本來就會讀既有Google工作表，此修正將該讀取留在啟動階段，不新增資料寫入。
+
+此變更不等於所有慢點已消失，需以後續正常流量核對新啟動及事件時間。冷啟動仍存在，LINE兩秒逾時與長期可靠收件佇列仍需另評估；沒有切換instance-based billing或增加常駐實例。Google官方依據：https://docs.cloud.google.com/run/docs/tips/python 。
+
 ## 2026-11-17 延遲事件唯讀查核
 
 管理者已執行 scoped view 設定，Actions #41（44094647559）與 #42（44095802392）實測 log_access=available。#42 通過412項測試，僅讀指定服務兩個固定事件時段共25列，未達500列上限。正式修訂仍為 line-bot-calc-gh-44051022014-1；此次未部署應用或變更計費。
