@@ -52,6 +52,50 @@ class Control:
         return dict(active_revision=self.active(s),latest_ready_revision=s['status']['latestReadyRevisionName'],
                     image=s['spec']['template']['spec']['containers'][0]['image'],health=self.health(s),
                     cpu=1,memory='512Mi',min_instances=0,max_instances=1)
+    def diagnose(self):
+        # A fixed incident window/target, never a caller-supplied filter/command.
+        # Raw stdout/stderr is captured only in memory, never printed/artifacted.
+        s=self.service_state()
+        result=dict(active_revision=self.active(s),
+                    container_concurrency=s['spec']['template']['spec'].get('containerConcurrency'),
+                    request_timeout_seconds=s['spec']['template']['spec'].get('timeoutSeconds'),
+                    window_start='2026-11-17T10:15:00Z',window_end='2026-11-17T10:35:00Z')
+        query=('resource.type="cloud_run_revision" AND resource.labels.service_name="line-bot-calc" '
+               'AND resource.labels.location="asia-east1" '
+               'AND timestamp>="2026-11-17T10:15:00Z" AND timestamp<"2026-11-17T10:35:00Z"')
+        try:
+            entries=self.g('logging','read',query,'--limit=500','--order=asc')
+        except ControlError as exc:
+            result['log_access']='permission_denied' if 'permission_denied' in str(exc) else 'unavailable'
+            return result
+        result.update(log_access='available',may_be_truncated=len(entries)==500,
+                      timings=self.safe_timings(entries))
+        return result
+    @staticmethod
+    def safe_timings(entries):
+        safe=[]
+        patterns=(r'GROUP_SALE_DB_MS connect [0-9]+ transaction [0-9]+',
+                  r'GROUP_SALE_REPLY_MS line_api [0-9]+ total [0-9]+',
+                  r'GROUP_SALE_EVENT_LAG_MS [0-9]+',
+                  r'GROUP_SHEET_SYNC_MS [0-9]+ completed [0-9]+ failed (?:True|False)',
+                  r'GROUP_SHEET_SYNC_BUSY')
+        for entry in entries:
+            timestamp=entry.get('timestamp','')
+            if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z',timestamp):continue
+            text=entry.get('textPayload','').strip()
+            http=entry.get('httpRequest',{})
+            latency=http.get('latency','')
+            status=http.get('status')
+            if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?s',latency) and type(status) is int:
+                safe.append(dict(timestamp=timestamp,kind='http',seconds=float(latency[:-1]),status=status))
+            elif any(re.fullmatch(pattern,text) for pattern in patterns):
+                safe.append(dict(timestamp=timestamp,kind='app_timing',timing=text))
+            elif text.startswith('Starting new instance. Reason:'):
+                reason=re.search(r'Reason: (AUTOSCALING|DEPLOYMENT_ROLLOUT|MANUAL_OR_CUSTOMER_MIN_INSTANCE)\b',text)
+                safe.append(dict(timestamp=timestamp,kind='instance_start',reason=reason[1] if reason else 'other'))
+            elif text.startswith('Default STARTUP TCP probe succeeded'):
+                safe.append(dict(timestamp=timestamp,kind='startup_ready'))
+        return safe
     def report_state(self):
         return self.g('run','jobs','describe','line-bot-daily-report','--region='+self.region)
     @staticmethod
@@ -173,6 +217,8 @@ def main():
     mode=sys.argv[1]
     if mode=='check':
         result=c.snapshot()
+    elif mode=='diagnose':
+        result=c.diagnose()
     elif mode=='deploy':
         result=c.deploy(os.environ['SOURCE_SHA'],os.environ['EXPECTED_REVISION'],os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT'])
     elif mode=='report-check':
