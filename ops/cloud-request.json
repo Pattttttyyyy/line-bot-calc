@@ -1,6 +1,6 @@
 {
-  "mode": "deploy",
+  "mode": "diagnose",
   "source_sha": "636cb78aea2cbcec3390495f9390ca48cb943abf",
-  "expected_revision": "line-bot-calc-gh-44099419706-1",
-  "request_id": "defer-google-cold-start-20261117"
+  "expected_revision": "",
+  "request_id": "verify-deferred-startup-and-late-orders-20261117"
 }
