@@ -1,6 +1,6 @@
 {
-  "mode": "report-check",
-  "source_sha": "bd218ec064b2f70336f3293d4854ddb4f5741885",
+  "mode": "check",
+  "source_sha": "726373526ebfb6024b08f243b14cf78e17d69fce",
   "expected_revision": "",
-  "request_id": "report-runtime-permission-20261112"
+  "request_id": "nonblocking-sheet-preflight-20261117"
 }
