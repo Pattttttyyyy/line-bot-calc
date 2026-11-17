@@ -1,6 +1,6 @@
 {
-  "mode": "check",
-  "source_sha": "598d3845499ba53e5bdd98cad4eeedd765032c76",
-  "expected_revision": "line-bot-calc-gh-44051022014-1",
-  "request_id": "scoped-incident-read-complete-20261117"
+  "mode": "diagnose",
+  "source_sha": "6ef2435537b4647228308772c82c5a5b40227022",
+  "expected_revision": "",
+  "request_id": "evening-card-delay-2126-20261117"
 }
