@@ -1,6 +1,6 @@
 {
-  "mode": "keep-warm",
+  "mode": "check",
   "source_sha": "db63b5632b66cb31f2b0cf38a192d4aa04f4eb5e",
-  "expected_revision": "line-bot-calc-gh-44116291646-1",
-  "request_id": "approved-service-minimum-one-20261118"
+  "expected_revision": "",
+  "request_id": "check-only-with-approved-service-minimum-one-20261118"
 }
