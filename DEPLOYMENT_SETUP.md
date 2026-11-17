@@ -2,6 +2,10 @@
 
 ## 啟動完成後才監聽連線（2026-11-17）
 
+22:09正式部署完成：Actions #45（44099419706）通過417項測試（169離線含真實Gunicorn假應用啟動測試、53 SDK/部署、135隔離PostgreSQL、36停用扣點草稿mock、24隔離journal）。source `17e7f52df901edc152309191dfd4704795e5aee7`，修訂 `line-bot-calc-gh-44099419706-1` 接100%流量，HTTP200，映像 `sha256:3620da895e00c0a317028ece95e0828fd1e27a4594446b1cf90916aa68ffb1d4`。原資源及按請求計費通過部署前後核對。
+
+Actions #46（44100172726）唯讀驗證46列服務日誌，未截斷：22:09:19.640新實例開始，22:09:31.450輸出`BOT_APPLICATION_READY_MS 10427`，22:09:31.454才通過TCP啟動檢查，22:09:35首頁健康200。證明應用準備完成先於TCP readiness；10.427秒是初始化耗時，不是正式發卡秒數，沒有據此聲稱真實交易延遲全部消失。沒有LINE試發、正式出入庫/調帳/撤回、IAM、排程、報表映像或常駐計費變更。
+
 21:26的拿卡事件於21:31:58才進入拿卡路徑，`GROUP_SALE_EVENT_LAG_MS=320470`；資料庫段connect=8700ms、transaction=4533ms，LINE段20898ms、total=35700ms，送出後試算表段34364ms。該訂單資料庫建立時間為21:32:05，因此主要約五分鐘等待在拿卡處理之前，無法用送出後同步解釋。同期21:26:38新實例啟動，21:26:39 TCP啟動探測已通過。此證據定位接單前等待，但沒有單獨量測CPU節流或Google初始化各段，不宣稱每一秒原因已證實。
 
 原Docker CMD未preload；Gunicorn可在應用載入前先監聽，預設TCP探測因而過早通過。現在加`--preload`，應用與既有初始化完成後才監聽。仍單worker、8threads、timeout0；原1CPU/512Mi、min0/max1、按請求計費與同步鎖分離保留。新增僅含數字的`BOT_APPLICATION_READY_MS`供後續日誌查核。部署預檢遇command/args覆寫則停止，避免映像CMD修正未生效卻回報成功。
@@ -18,7 +22,7 @@
 
 LINE 官方文件明確指出 webhook 未於2秒內回應會逾時；Google 官方文件指出按請求計費時，請求外CPU會停用或嚴重受限，後續請求可能喚醒原工作。目前 callback 同步處理全部工作，Cloud Run min0/max1、request-based billing。觀察與「LINE連線逾時後尚未完成的處理受CPU限制、後續流量喚醒」一致，但尚無該程序CPU節流或請求關聯追蹤，應標示推論，不能宣稱已證實或修復。禁止僅據HTTP 200宣稱回覆在2秒內完成。
 
-待使用者核准的具體下一步：可先在原1CPU/512Mi、min0/max1維持不變下，試行關閉CPU閒置節流（instance-based billing），並以後續正常指令觀察；會改變計費，尚未執行。若單一實例連續運作30天，按公開單價粗估CPU與RAM約US$49.25（未扣免費額度，不含網路、日誌、映像與其他服務），實際min0用量可能較少；不是帳單上限。此試行不取代長期可靠收件佇列及快速HTTP回應的設計。
+早先備選方案（未採用，22:09已優先部署上述啟動順序修正）：可先在原1CPU/512Mi、min0/max1維持不變下，試行關閉CPU閒置節流（instance-based billing），並以後續正常指令觀察；會改變計費，尚未執行。若單一實例連續運作30天，按公開單價粗估CPU與RAM約US$49.25（未扣免費額度，不含網路、日誌、映像與其他服務），實際min0用量可能較少；不是帳單上限。此試行不取代長期可靠收件佇列及快速HTTP回應的設計。
 
 參考：https://developers.line.biz/en/docs/messaging-api/check-webhook-error-statistics/ 、https://docs.cloud.google.com/run/docs/tips/general 、https://cloud.google.com/run/pricing 。
 
