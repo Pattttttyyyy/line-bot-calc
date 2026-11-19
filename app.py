@@ -1,3 +1,4 @@
+from legacy_sale_delivery import deliver_committed_sale, handle_sale_recovery
 from time import perf_counter
 _application_boot_started = perf_counter()
 
@@ -4463,6 +4464,9 @@ def handle_message(event):
             )
             return
 
+        if handle_sale_recovery(event, globals()):
+            return
+
         # ------------------------------------------
         # 測試
         # ------------------------------------------
@@ -4922,57 +4926,9 @@ def handle_message(event):
                     )
                     return
 
-            sheet_sync_ok = append_sales_rows(
-                customer,
-                result["items"],
-            )
-
-            product_sheet_ok = mark_product_sale(
-                result["items"],
-                customer,
-            )
-
-            summary_lines = [
-                "✅ 出庫完成",
-                "",
-            ]
-            if customer:
-                summary_lines.extend([f"客戶：《{customer}》", ""])
-
-            for item in result["items"]:
-                summary_lines.append(
-                    f"{item['product']['code']} × "
-                    f"{item['quantity']}"
-                )
-
-            summary_lines.extend([
-                "",
-                f"（訂單編號{result['sale_batch_no']}）",
-            ])
-
-            if not sheet_sync_ok:
-                summary_lines.extend([
-                    "",
-                    "⚠️ 銷售紀錄資料或每日上色未完成，請檢查 Google Sheet；勿重複出庫",
-                ])
-
-            if not product_sheet_ok:
-                summary_lines.extend([
-                    "",
-                    "⚠️ 商品分頁暫時未同步出庫",
-                ])
-
-            messages = list(
-                result["serial_chunks"]
-            )
-
-            messages.append(
-                "\n".join(summary_lines)
-            )
-
-            reply_messages(
-                event,
-                messages,
+            deliver_committed_sale(
+                event, globals(), customer, result["items"],
+                result["serial_chunks"], result["sale_batch_no"],
             )
             return
 
@@ -5162,61 +5118,13 @@ def handle_message(event):
                     )
                     return
 
-            sheet_sync_ok = append_sales_rows(
-                customer,
-                [
-                    {
-                        "product": result["product"],
-                        "quantity": quantity,
-                        "order_no": result["order_no"],
-                    }
-                ],
-            )
-
-            product_sheet_ok = mark_product_sale(
-                [{
-                    "product": result["product"],
-                    "quantity": quantity,
-                    "order_no": result["order_no"],
-                    "serials": result["serials"],
-                }],
-                customer,
-            )
-
-            serial_text = "\n".join(
-                result["serials"]
-            )
-
-            if customer:
-                summary_line = (
-                    f"{result['product']['code']} × {quantity}  "
-                    f"➡️《{customer}》"
-                )
-            else:
-                summary_line = (
-                    f"{result['product']['code']} × {quantity}"
-                )
-
-            reply_messages(
-                event,
-                [
-                    serial_text,
-                    (
-                        f"✅ 已出庫\n"
-                        f"{summary_line}\n"
-                        f"（訂單編號{result['order_no']}）"
-                        + (
-                            "\n⚠️ 銷售紀錄資料或每日上色未完成，請檢查 Google Sheet；勿重複出庫"
-                            if not sheet_sync_ok
-                            else ""
-                        )
-                        + (
-                            "\n⚠️ 商品分頁暫時未同步出庫"
-                            if not product_sheet_ok
-                            else ""
-                        )
-                    ),
-                ],
+            items = [{
+                "product": result["product"], "quantity": quantity,
+                "order_no": result["order_no"], "serials": result["serials"],
+            }]
+            deliver_committed_sale(
+                event, globals(), customer, items,
+                ["\n".join(result["serials"])], result["order_no"],
             )
             return
 

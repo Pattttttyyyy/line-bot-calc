@@ -20,3 +20,4 @@
 !stock_batch_numbers.py
 !stock_in_notes.py
 !lazy_resource.py
+!legacy_sale_delivery.py
