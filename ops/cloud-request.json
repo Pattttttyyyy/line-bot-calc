@@ -1,6 +1,6 @@
 {
-  "mode": "check",
-  "source_sha": "db63b5632b66cb31f2b0cf38a192d4aa04f4eb5e",
-  "expected_revision": "",
-  "request_id": "check-only-with-approved-service-minimum-one-20261118"
+  "mode": "deploy",
+  "source_sha": "d7d787fbbff6e6bb82db8680ba3ae786cadedc3d",
+  "expected_revision": "line-bot-calc-gh-44116291646-1",
+  "request_id": "approved-legacy-reply-first-fix-20261120"
 }
