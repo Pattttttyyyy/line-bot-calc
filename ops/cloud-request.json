@@ -1,6 +1,6 @@
 {
-  "mode": "deploy",
+  "mode": "check",
   "source_sha": "d7d787fbbff6e6bb82db8680ba3ae786cadedc3d",
-  "expected_revision": "line-bot-calc-gh-44116291646-1",
-  "request_id": "approved-legacy-reply-first-fix-20261120"
+  "expected_revision": "",
+  "request_id": "verify-legacy-reply-first-release-20261120"
 }
