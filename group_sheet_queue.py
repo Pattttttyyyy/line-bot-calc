@@ -8,6 +8,7 @@ Only mirrors committed transactions; never allocates cards, sends LINE or adjust
 import json
 from time import perf_counter
 from group_credit import CreditError, TEST_CUSTOMER
+from sheet_sync_notice import notify_sheet_failure
 
 PENDING = 'sheet:pending:v1'
 DONE = 'sheet:done:v1'
@@ -17,6 +18,7 @@ def sync_pending_sales(service, ns, group, limit=1):
     started = perf_counter()
     completed = 0
     failed = False
+    event = None
     for _ in range(limit):
         conn = service.get_db()
         try:
@@ -93,6 +95,8 @@ def sync_pending_sales(service, ns, group, limit=1):
             break
         finally:
             conn.close()
+    if failed:
+        notify_sheet_failure(ns, event.get('order_no') if event else None, credit=True)
     print('GROUP_SHEET_SYNC_MS',round((perf_counter()-started)*1000),
           'completed',completed,'failed',failed,flush=True)
     return dict(completed=completed,failed=failed)
