@@ -1,6 +1,6 @@
 {
-  "mode": "deploy",
+  "mode": "check",
   "source_sha": "244e43f9bb3ffebbc059908e49491e79a9e042e4",
-  "expected_revision": "line-bot-calc-gh-44564020854-1",
-  "request_id": "approved-admin-sheet-failure-notice-20261120"
+  "expected_revision": "",
+  "request_id": "verify-admin-sheet-failure-notices-20261120"
 }
