@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT=Path(__file__).parent
 sys.path.insert(0,str(ROOT))
-SUITES=['test_legacy_sale_delivery','test_group_credit','test_cancel_adapter','test_ui','test_bottom_quick','test_text_commands','test_receipt_cards','test_group_calculator','test_fast_sale','test_runtime_bundle','test_startup_readiness','test_lazy_resource']
+SUITES=['test_sheet_sync_notice','test_legacy_sale_delivery','test_group_credit','test_cancel_adapter','test_ui','test_bottom_quick','test_text_commands','test_receipt_cards','test_group_calculator','test_fast_sale','test_runtime_bundle','test_startup_readiness','test_lazy_resource']
 if __name__=='__main__':
     result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromNames(SUITES))
     raise SystemExit(not result.wasSuccessful())

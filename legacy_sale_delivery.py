@@ -5,11 +5,12 @@ Original transactions remain the durable source for explicit recovery and mirror
 """
 import re
 from time import perf_counter
+from sheet_sync_notice import notify_sheet_failure
 
 ORDER = re.compile(r'TX[0-9]{14}[0-9A-F]{6}(?:-[0-9]{2})?')
 
 
-def mirror_sale(ns, customer, items):
+def mirror_sale(ns, customer, items, *, order_no=None):
     results = []
     for name, args in (('append_sales_rows', (customer, items)),
                        ('mark_product_sale', (items, customer))):
@@ -19,6 +20,8 @@ def mirror_sale(ns, customer, items):
             results.append(False)
             print('LEGACY_SALE_MIRROR_ERROR', name, type(exc).__name__, flush=True)
     print('LEGACY_SALE_MIRROR_DONE', all(results), flush=True)
+    if not all(results):
+        notify_sheet_failure(ns, order_no or (items[0]['order_no'] if items else None))
     return all(results)
 
 
@@ -29,8 +32,7 @@ def deliver_committed_sale(event, ns, customer, items, chunks, order_no, *, rese
         summary.append(f'客戶：《{customer}》')
     summary.extend(f"{item['product']['code']} × {item['quantity']}" for item in items)
     summary.extend([f'訂單：{order_no}', '原單補發不另扣庫存、不新增帳款。' if resend else
-                    '資料庫已出庫，請勿重複下單。',
-                    '試算表接續同步；需要重試同步時可用 /同步出庫 訂單編號。'])
+                    '請勿重複下單。'])
     started = perf_counter()
     try:
         ns['reply_messages'](event, list(chunks) + ['\n'.join(summary)])
@@ -43,7 +45,7 @@ def deliver_committed_sale(event, ns, customer, items, chunks, order_no, *, rese
         return True
     finally:
         # Request-based Cloud Run supplies CPU here; no idle background thread.
-        mirror_sale(ns, customer, items)
+        mirror_sale(ns, customer, items, order_no=order_no)
 
 
 def original_sale(ns, context, order_no):
@@ -101,7 +103,7 @@ def handle_sale_recovery(event, ns):
     try:
         customer, items = original_sale(ns, ns['get_context_id'](event), parts[1])
         if parts[0] == '/同步出庫':
-            ok = mirror_sale(ns, customer, items)
+            ok = mirror_sale(ns, customer, items, order_no=parts[1])
             ns['reply'](event, '原單試算表同步完成；未發送序號、未扣庫存或新增帳款。' if ok else
                         '試算表尚未同步完整，可用相同指令重試；未發送序號、未扣庫存或新增帳款。')
             return True

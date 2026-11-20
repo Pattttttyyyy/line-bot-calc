@@ -23,3 +23,15 @@ Validation: credential-free delivery ordering, independent Sheet exceptions,
 ambiguous LINE timeouts, admin denial, same-chat queries, recalled/missing orders,
 original serial recovery, mirror-only requests, both router paths, image bundling,
 and the existing offline and cloud-control suites. CI runs isolated PostgreSQL.
+
+## Synchronization failure alerts
+
+Failed legacy and customer-group mirrors now push a private notice to the existing
+ALLOWED_LINE_USER_IDS administrator list, with the original order and correct
+manual sync command. No serials, access tokens, customer messages, or error details
+are included. Successful or busy mirrors send no alert. Duplicate backlog alerts
+are suppressed for five minutes in this process. Push failures are isolated from
+stock/accounting and other recipients, bounded to eight seconds per recipient,
+and logged without secrets. Administrators must be reachable by LINE push (add
+the bot as a friend and do not block it). Notifications are best effort; no
+automatic resend of cards or stock transaction is introduced.

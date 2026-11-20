@@ -316,4 +316,6 @@ def deliver_sale(event,ns,service,group_id,event_id,result):
             sync_pending_sales(service,ns,group_id,limit=10)
         except Exception:
             print('GROUP_SHEET_SYNC_PENDING')
+            from sheet_sync_notice import notify_sheet_failure
+            notify_sheet_failure(ns, result.get('order_no'), credit=True)
     return True
